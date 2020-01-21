@@ -12,10 +12,10 @@ from _devbuild.gen import grammar_nt
 from _devbuild.gen.syntax_asdl import source
 from asdl import format as fmt
 from core import alloc
+from core import error
 from core import meta
 from core import pyutil
 from core import ui
-from core import util
 from frontend import reader
 from frontend import lexer
 from oil_lang import expr_parse
@@ -41,7 +41,7 @@ def main(argv):
 
   try:
     pnode, _ = e_parser.Parse(lex, grammar_nt.command_expr)
-  except util.ParseError as e:
+  except error.Parse as e:
     ui.PrettyPrintError(e, arena)
     return 2
 

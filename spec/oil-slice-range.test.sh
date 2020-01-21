@@ -1,70 +1,81 @@
 # Test a[1]
 
-#### ranges have higher precedence than comparison
-# Python slices are comparable?  Why?
-pp 1:3 < 1:4
+#### ranges have higher precedence than comparison (disabled)
+
+# This test exposed nondeterminism in CPython itself!  Gah.  Is this because of
+# the hashing?
+# Python xrange objects probably shouldn't even be comparable!
+#
+# = 1:3 < 1:4
+# >>> xrange(1,3)  < xrange(1,4)
+# False
+# >>> xrange(1,3)  < xrange(1,4)
+# True
+
+= 1:3
+
 ## STDOUT:
-(bool)   True
+(xrange)   xrange(1, 3)
 ## END
 
 #### ranges have lower precedence than bitwise operators
-pp 3:3|4
+= 3:3|4
 ## STDOUT:
 (xrange)   xrange(3, 7)
 ## END
 
 #### subscript and range of array
 var myarray = @(1 2 3 4)
-pp myarray[1]
-pp myarray[1:3]
+= myarray[1]
+= myarray[1:3]
 
 echo 'implicit'
-pp myarray[:2]
-pp myarray[2:]
+= myarray[:2]
+= myarray[2:]
 
 # Stride not supported
-#pp myarray[1:4:2]
+#= myarray[1:4:2]
 
 # Now try omitting smoe
-#pp myarray[1:4:2]
+#= myarray[1:4:2]
 ## STDOUT:
-(str)   '2'
-(list)   ['2', '3']
+(Str)   '2'
+(List)   ['2', '3']
 implicit
-(list)   ['1', '2']
-(list)   ['3', '4']
+(List)   ['1', '2']
+(List)   ['3', '4']
 ## END
 
 #### subscript and range of list
 var mylist = [1,2,3,4]
-pp mylist[1]
-pp mylist[1:3]
+= mylist[1]
+= mylist[1:3]
 
 echo 'implicit'
-pp mylist[:2]
-pp mylist[2:]
+= mylist[:2]
+= mylist[2:]
 ## STDOUT:
-(int)   2
-(list)   [2, 3]
+(Int)   2
+(List)   [2, 3]
 implicit
-(list)   [1, 2]
-(list)   [3, 4]
+(List)   [1, 2]
+(List)   [3, 4]
 ## END
 
 #### expressions and negative indices
 var myarray = @(1 2 3 4 5)
-pp myarray[-1]
-pp myarray[-4:-2]
+= myarray[-1]
+= myarray[-4:-2]
 
 echo 'implicit'
-pp myarray[:-2]
-pp myarray[-2:]
+= myarray[:-2]
+= myarray[-2:]
 ## STDOUT:
-(str)   '5'
-(list)   ['2', '3']
+(Str)   '5'
+(List)   ['2', '3']
 implicit
-(list)   ['1', '2', '3']
-(list)   ['4', '5']
+(List)   ['1', '2', '3']
+(List)   ['4', '5']
 ## END
 
 #### Range loop
@@ -100,7 +111,7 @@ for (i in range(1, 7, 2)) {
 shopt -s oil:all
 var mylist = [0,1,2,3,4,5,6,7,8]
 var x = mylist[slice(1, 7, 2)]
-echo @x
+write @x
 ## STDOUT:
 1
 3
@@ -130,9 +141,9 @@ echo $val
 #### Copy wtih a[:]
 var a = [1,2,3]
 var b = a[:]
-pp b
+= b
 ## STDOUT:
-(list)   [1, 2, 3]
+(List)   [1, 2, 3]
 ## END
 
 #### Slices with Multilple Dimensions (with Table/data frame)
@@ -153,14 +164,14 @@ var t = Table()
 
 # Cut off the first two rows
 var t1 = t[2:, :]
-pp t1
+= t1
 
 var t2 = t[:2, 3:4]
-pp t2
+= t2
 
 ## STDOUT:
-(str)   'TODO: Table Slicing'
-(str)   'TODO: Table Slicing'
+(Str)   'TODO: Table Slicing'
+(Str)   'TODO: Table Slicing'
 ## END
 
 #### Slice with Range
@@ -168,7 +179,7 @@ shopt -s oil:all
 var mylist = [1,2,3,4,5]
 var r = 1:3
 var myslice = mylist[r]
-echo @myslice
+write @myslice
 ## STDOUT:
 a
 ## END
@@ -176,7 +187,7 @@ a
 #### Range with list constructor
 shopt -s oil:all
 var mylist = List(0:3)
-echo @mylist
+write @mylist
 ## STDOUT:
 0
 1

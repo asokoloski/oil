@@ -181,9 +181,6 @@ should-skip() {
   case $1 in
     # not passing yet!
     #
-    # - prereqs for evaluation:
-    #   - switch1: typeswitch.  Needs casting?
-    #   - switch2: primitive switch.  Translation crashes
     # - later
     #   - scoped_resource: Not translated at all.  No RuntimeError.
 
@@ -191,11 +188,12 @@ should-skip() {
 
     # TODO:
     # - alloc_main and lexer_main work!  They just need build scripts
-    pgen2_demo|alloc_main|lexer_main|named_args)
+    # - varargs doesn't have p_die()
+    pgen2_demo|alloc_main|lexer_main|named_args|varargs)
       return 0
       ;;
 
-    switch1|switch2|scoped_resource)
+    scoped_resource)
       return 0
       ;;
     *)

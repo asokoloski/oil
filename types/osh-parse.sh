@@ -10,13 +10,15 @@ set -o pipefail
 set -o errexit
 shopt -s strict:all 2>/dev/null || true  # dogfood for OSH
 
+source types/common.sh
+
 demo() {
   export PYTHONPATH=.
   echo 'echo hi' | bin/osh_parse.py "$@"
+  bin/osh_parse.py 'ls -l'
 }
 
 readonly PY_DEPS='_tmp/osh-parse-deps.txt'
-readonly OSH_PARSE_MANIFEST='types/osh-parse-manifest.txt'
 
 deps() {
   local pythonpath='.:vendor'
@@ -42,10 +44,6 @@ egrep-deps() {
   cat $PY_DEPS | xargs -- egrep "$@"
 }
 
-typecheck() {
-  MYPYPATH=. PYTHONPATH=.  mypy --py2 "$@"
-}
-
 typecheck-all() {
   local manifest=$1
   local strict_none=${2:-}
@@ -57,31 +55,14 @@ typecheck-all() {
   if test -n "$strict_none"; then
     flags='--strict'
   else
-    flags="--strict --no-implicit-optional --no-strict-optional"
+    flags=$MYPY_FLAGS
   fi
 
   set +o errexit
-  cat $manifest | xargs -- $0 typecheck $flags >_tmp/err.txt
+  cat $manifest | xargs -- $0 typecheck --follow-imports=silent $flags >_tmp/err.txt
   #echo "status: $?"
 
-  echo
-  cat _tmp/err.txt
-  echo
-
-  # Hack to get rid of summary line that appears in some MyPy versions.
-  local num_errors=$(grep -F -v 'Found 1 error in 1 file' _tmp/err.txt | wc -l)
-
-  # 1 type error allowed for asdl/pretty.py, because our --no-strict-optional
-  # conflicts with demo/typed and so forth.
-  if [[ $num_errors -eq 1 ]]; then
-    return 0
-  else
-    echo "Expected 1 error, but got $num_errors"
-    return 1
-  fi
-
-  #echo ---
-  #diff -u _tmp/osh-parse-src.txt _tmp/to-check.txt
+  assert-one-error _tmp/err.txt
 }
 
 # The manifest needs to be checked in because we don't have

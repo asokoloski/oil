@@ -30,18 +30,30 @@ from __future__ import print_function
 import termios  # for read -n
 import sys
 
-from _devbuild.gen import osh_help  # generated file
 from _devbuild.gen.runtime_asdl import (
   value_e, scope_e, span_e, builtin_e
 )
 from core import ui
-from core import util
 from frontend import args
 from pylib import os_path
 from osh import state
 
 import libc
 import posix_ as posix
+
+import os
+
+from mycpp import mylib
+if mylib.PYTHON:
+  # Hack because we don't want libcmark.so dependency for build/dev.sh minimal
+  try:
+    from _devbuild.gen import help_index  # generated file
+  except ImportError:
+    help_index = None
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+  from _devbuild.gen.runtime_asdl import builtin_t
 
 # Special builtins can't be redefined by functions.  On the other hand, 'cd'
 # CAN be redefined.
@@ -57,7 +69,7 @@ _SPECIAL_BUILTINS = {
 
     "set": builtin_e.SET,
     "shift": builtin_e.SHIFT,
-    #"times": builtin_e.TIMES,  # no implemented
+    "times": builtin_e.TIMES,
     "trap": builtin_e.TRAP,
     "unset": builtin_e.UNSET,
 
@@ -121,11 +133,16 @@ _NORMAL_BUILTINS = {
     "alias": builtin_e.ALIAS,
     "unalias": builtin_e.UNALIAS,
 
-    # OSH only
-    "repr": builtin_e.REPR,
+    # Oil only
     "push": builtin_e.PUSH,
-    "use": builtin_e.USE,
+    "append": builtin_e.APPEND,
+
+    "write": builtin_e.WRITE,
+    "getline": builtin_e.GETLINE,
     "json": builtin_e.JSON,
+
+    "repr": builtin_e.REPR,
+    "use": builtin_e.USE,
 }
 
 # This is used by completion.
@@ -171,16 +188,19 @@ def _Register(name, help_topic=None):
 
 
 def ResolveSpecial(argv0):
+  # type: (str) -> builtin_t
   """Is it a special builtin?"""
   return _SPECIAL_BUILTINS.get(argv0, builtin_e.NONE)
 
 
 def ResolveAssign(argv0):
+  # type: (str) -> builtin_t
   """Is it an assignment builtin?"""
   return _SPECIAL_ASSIGN_BUILTINS.get(argv0, builtin_e.NONE)
 
 
 def Resolve(argv0):
+  # type: (str) -> builtin_t
   """Is it any other builtin?"""
   return _NORMAL_BUILTINS.get(argv0, builtin_e.NONE)
 
@@ -257,6 +277,17 @@ def _AppendParts(s, spans, max_results, join_next, parts):
 
   #log('PARTS %s', parts)
   return done, join_next
+
+
+TIMES_SPEC = _Register('times')
+
+class Times(object):
+  def __call__(self, arg_vec):
+    utime, stime, cutime, cstime, elapsed = os.times()
+    print("%dm%1.3fs %dm%1.3fs" % (utime / 60, utime % 60, stime / 60, stime % 60))
+    print("%dm%1.3fs %dm%1.3fs" % (cutime / 60, cutime % 60, cstime / 60, cstime % 60))
+
+    return 0
 
 
 READ_SPEC = _Register('read')
@@ -606,6 +637,14 @@ class Pwd(object):
     return 0
 
 
+HELP_SPEC = _Register('help')
+
+# Use Oil flags?  -index?
+HELP_SPEC.ShortFlag('-i')  # show index
+# Note: bash has help -d -m -s, which change the formatting
+
+# TODO: Need $VERSION inside all pages?
+
 class Help(object):
 
   def __init__(self, loader, errfmt):
@@ -613,39 +652,44 @@ class Help(object):
     self.errfmt = errfmt
 
   def __call__(self, arg_vec):
-    # TODO: Need $VERSION inside all pages?
     try:
       topic = arg_vec.strs[1]
     except IndexError:
       topic = 'help'
 
-    if topic == 'toc':
-      # Just show the raw source.
-      f = self.loader.open('doc/osh-quick-ref-toc.txt')
-    else:
-      try:
-        section_id = osh_help.TOPIC_LOOKUP[topic]
-      except KeyError:
-        # NOTE: bash suggests:
-        # man -k zzz
-        # info zzz
-        # help help
-        # We should do something smarter.
+    # TODO: Should be -i for index?  Or -l?
+    if topic == 'index':
+      groups = arg_vec.strs[2:]
+      if len(groups) == 0:
+        # Print the whole index
+        groups = help_index.GROUPS
 
-        # NOTE: This is mostly an interactive command.  Is it obnoxious to
-        # quote the line of code?
-        self.errfmt.Print('No help topics match %r', topic,
-                          span_id=arg_vec.spids[1])
-        return 1
-      else:
+      for group in groups:
         try:
-          f = self.loader.open('_devbuild/osh-quick-ref/%s' % section_id)
-        except IOError as e:
-          util.log(str(e))
-          raise AssertionError('Should have found %r' % section_id)
+          f = self.loader.open('_devbuild/help/_%s' % group)
+        except IOError:
+          self.errfmt.Print('Invalid help index group: %r', group)
+          return 1
+        print(f.read())
+        f.close()
+      return 0
 
-    for line in f:
-      sys.stdout.write(line)
+    try:
+      f = self.loader.open('_devbuild/help/%s' % topic)
+    except IOError:
+      # NOTE: bash suggests:
+      # man -k zzz
+      # info zzz
+      # help help
+      # We should do something smarter.
+      
+      # NOTE: This is mostly an interactive command.  Is it obnoxious to
+      # quote the line of code?
+      self.errfmt.Print('no help topics match %r', topic,
+                        span_id=arg_vec.spids[1])
+      return 1
+
+    print(f.read())
     f.close()
     return 0
 

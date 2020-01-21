@@ -36,7 +36,12 @@ of the [CPython](https://en.wikipedia.org/wiki/CPython) interpreter.
 
 ### Quick Start on Linux
 
-Clone the repo, build the Python extension, and run `bin/osh` (or `bin/oil`):
+Fetch the source code:
+
+    git clone https://github.com/oilshell/oil.git  # or your fork
+    git submodule update --init --recursive        # to get dependencies
+
+Build the Python extension, and run `bin/osh` (or `bin/oil`):
 
     bash$ build/dev.sh minimal
     ...
@@ -104,14 +109,14 @@ Oil is implemented with DSLs and metaprogramming, for "leverage".
     pgen2/            # Parser Generator, borrowed from CPython
     mycpp/            # Experimental translator from typed Python to C++.
                       # Depends on MyPy.
-    opy/              # Python compiler in Python
+    opy/              # Python compiler in Python (mycpp/ will replace it)
       lib/            # Common code
       compiler2/      # Bytecode compiler
       byterun/        # Metacircular bytecode VM in Python
       gold/           # tests
       byterun/        # Unused bytecode interpreter
 
-### Tests
+### Several Kinds of Tests
 
 Unit tests are named `foo_test.py` and live next to `foo.py`.
 
@@ -145,6 +150,7 @@ shell, of course!
                       # moved to tests/ if automated.
     misc/             # A junk drawer
     web/              # HTML/JS/CSS for tests and tools
+    lazylex/          # An HTML lexer which doctools/ builds upon.
 
 ### Temp Dirs
 
@@ -179,7 +185,7 @@ above create and use these dirs.
         web/          # Static files, copy of $REPO_ROOT/web
           table/
 
-### End user build system
+### Build System for End Users
 
 This is very different than the **developer build** of Oil.
 
@@ -187,10 +193,11 @@ This is very different than the **developer build** of Oil.
     configure
     install
 
-### Docs
+### Doc Sources
 
     doc/              # A mix of docs
-    README.md         # For Oil developers
+    doctools/         # Tools that use lazylex/ to transform Markdown/HTML
+    README.md         # This page, which is For Oil developers
 
     LICENSE.txt       # For end users
     INSTALL.txt

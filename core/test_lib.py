@@ -13,8 +13,9 @@ import string
 import sys
 
 from _devbuild.gen.runtime_asdl import builtin_e
-from _devbuild.gen.syntax_asdl import source
+from _devbuild.gen.syntax_asdl import source, Token
 from asdl import pybase
+from asdl import runtime
 from core import alloc
 from core import completion
 from core import dev
@@ -36,6 +37,10 @@ from osh import expr_eval
 from osh import split
 from osh import state
 from osh import word_eval
+
+
+def Tok(id_, val):
+  return Token(id_, runtime.NO_SPID, val)
 
 
 def PrintableString(s):
@@ -62,6 +67,9 @@ def AsdlEqual(left, right):
 
   We don't use equality in the actual code, so this is relegated to test_lib.
   """
+  if left is None and right is None:
+    return True
+
   if isinstance(left, (int, str, bool, pybase.SimpleObj)):
     return left == right
 
@@ -237,7 +245,7 @@ def EvalCode(code_str, parse_ctx, comp_lookup=None, mem=None, aliases=None):
 def InitWordParser(word_str, oil_at=False, arena=None):
   arena = arena or MakeArena('<test_lib>')
   parse_opts = parse_lib.OilParseOptions()
-  parse_opts.at = oil_at
+  parse_opts.parse_at = oil_at
   loader = pyutil.GetResourceLoader()
   oil_grammar = meta.LoadOilGrammar(loader)
   parse_ctx = parse_lib.ParseContext(arena, parse_opts, {}, oil_grammar)

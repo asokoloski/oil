@@ -23,7 +23,8 @@ ubuntu-deps() {
   # gawk: used by spec-runner.sh for the special match() function.
   # time: used to collect the exit code and timing of a test
   # libreadline-dev: needed for the build/prepare.sh Python build.
-  sudo apt install python-dev gawk time libreadline-dev
+  # cmake: for build/dev.sh yajl-release
+  sudo apt install python-dev gawk time libreadline-dev cmake
 
   test/spec.sh install-shells
 }
@@ -58,11 +59,6 @@ test-r-packages() {
   R_LIBS_USER=$R_PATH Rscript -e 'library(dplyr)'
 }
 
-# Produces _devbuild/gen/osh_help.py
-gen-help() {
-  build/doc.sh osh-quick-ref
-}
-
 # Helper
 gen-asdl-py() {
   local asdl_path=$1  # e.g. osh/osh.asdl
@@ -87,7 +83,7 @@ gen-asdl-cpp() {
 
   local name=$(basename $asdl_path .asdl)
 
-  local out_prefix=_devbuild/gen-cpp/${name}_asdl
+  local out_prefix=_build/cpp/${name}_asdl
 
   # abbrev module is optional
   asdl/tool.py cpp $asdl_path $out_prefix
@@ -115,8 +111,12 @@ oil-asdl-to-py() {
   gen-asdl-py 'tools/find/find.asdl'
 }
 
+arith-parse-cpp-gen() {
+  osh/arith_parse_gen.py > _build/cpp/arith_parse.cc
+}
+
 oil-asdl-to-cpp() {
-  local dir='_devbuild/gen-cpp'
+  local dir='_build/cpp'
   mkdir -p $dir
 
   PRETTY_PRINT_METHODS='' gen-asdl-cpp 'asdl/hnode.asdl'
@@ -125,7 +125,7 @@ oil-asdl-to-cpp() {
 
   # Problem:
   # - we have both _devbuild/gen/id.h 
-  #           and _devbuild/gen-cpp/id_kind_asdl.h
+  #           and _build/cpp/id_kind_asdl.h
   # - do we want enum class?
 
   build/codegen.sh id-cpp-gen  # dependency on bool_arg_type_e
@@ -135,11 +135,28 @@ oil-asdl-to-cpp() {
   # Instead of id__Eol_Tok, use Id::Eol_Tok.
   # case lex_mode_e::Expr
 
-  gen-asdl-cpp frontend/syntax.asdl
   gen-asdl-cpp osh/runtime.asdl
 
+  gen-asdl-cpp frontend/syntax.asdl
+
+  # CRAZY SHARP HACK to make Token 16 bytes instead of 24!  (And speck is 8
+  # bytes rather than 12, although we might want to get rid of it.)
+  # Because of C's weak type system (typedef int Id_t), this is better than
+  # changing ASDL.
+  local orig=_build/cpp/syntax_asdl.h 
+  local tmp=_devbuild/tmp/syntax_asdl.h
+  sed 's/Id_t id;/uint16_t id;/g' $orig > $tmp
+  diff -u $orig $tmp || true
+  mv -v $tmp $orig
+}
+
+oil-cpp() {
+  oil-asdl-to-cpp
+  arith-parse-cpp-gen
+  build/mycpp.sh osh-parse
+
   echo
-  wc -l $dir/*
+  wc -l _build/cpp/*
 }
 
 # TODO: should fastlex.c be part of the dev build?  It means you need re2c
@@ -155,12 +172,7 @@ py-ext() {
 
   mkdir -p _devbuild/py-ext
   local arch=$(uname -m)
-  $setup_script build --build-lib _devbuild/py-ext/$arch
-
-  shopt -s failglob
-  local so=$(echo _devbuild/py-ext/$arch/$name.so)
-  ln -s -f -v $so $name.so
-
+  $setup_script build_ext --inplace
   file $name.so
 }
 
@@ -194,13 +206,51 @@ posix_() {
   native/posix_test.py "$@" > /dev/null
 }
 
+yajl-unit() {
+  pushd py-yajl
+  python2 tests/unit.py
+  popd
+}
+
+yajl-release() {
+  ### Creates a py-yajl/yajl/yajl-2.1.1/ dir, used by build/compile.sh
+
+  pushd py-yajl/yajl
+  ./configure
+  cmake .
+  make
+
+  #ls -l 
+
+  # TODO: Run tests too?  There are run_tests.sh files, but not all of them
+  # work.
+  popd
+}
+
+yajl() {
+  ### Build and test yajl binding (depends on submodule)
+
+  pushd py-yajl
+  python2 setup.py build_ext --inplace
+
+  # Adapted from py-yajl/runtests.sh
+  python2 tests/unit.py
+
+  # Hm this test doesn't make any assertions.
+  zcat test_data/issue_11.gz | python2 tests/issue_11.py | wc -l
+  popd
+
+  # Link it in the repo root
+  ln -s -f py-yajl/yajl.so .
+}
+
 clean() {
   rm -f --verbose libc.so fastlex.so line_input.so posix_.so
   rm -r -f --verbose _devbuild/py-ext
 }
 
 # No fastlex, because we don't want to require re2c installation.
-minimal() {
+_minimal() {
   mkdir -p _tmp _devbuild/gen
 
   # need -r because Python 3 puts a __pycache__ here
@@ -209,7 +259,8 @@ minimal() {
   # So modules are importable.
   touch _devbuild/__init__.py  _devbuild/gen/__init__.py
 
-  gen-help
+  # Generates _devbuild/help
+  build/doc.sh minimal-help
 
   oil-asdl-to-py  # depends on Id
 
@@ -225,7 +276,28 @@ minimal() {
   pylibc
   line-input
   posix_
+
+  # Require submodule
+  yajl
 }
+
+minimal() {
+  _minimal
+
+  cat <<EOF
+
+*****
+'build/dev.sh minimal' succeeded
+
+  It allows you to run and modify Oil quickly, but the lexer will be slow and
+  the help builtin won't work.
+
+'build/dev.sh all' requires re2c and libcmark.so.  (Issue #513 is related, ask
+on #oil-dev)
+*****
+EOF
+}
+
 
 oil-grammar() {
   oil_lang/grammar_gen.py marshal oil_lang/grammar.pgen2 _devbuild/gen
@@ -241,7 +313,10 @@ demo-grammar() {
 
 # Prerequisites: build/codegen.sh {download,install}-re2c
 all() {
-  minimal
+  rm -f *.so  # 12/2019: to clear old symlinks, maybe get rid of
+
+  _minimal
+  build/doc.sh all-help
   fastlex
 }
 

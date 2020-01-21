@@ -11,8 +11,6 @@ from __future__ import print_function
 
 import cStringIO
 
-from typing import List
-
 from _devbuild.gen.id_kind_asdl import Id
 from _devbuild.gen.syntax_asdl import sh_lhs_expr
 from _devbuild.gen.runtime_asdl import (
@@ -30,6 +28,12 @@ from pylib import path_stat
 import libc
 import posix_ as posix
 
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _devbuild.gen.id_kind_asdl import Id_t
+    from _devbuild.gen.runtime_asdl import lvalue_t, value_t, scope_t, var_flags_t
+
 
 # This was derived from bash --norc -c 'argv "$COMP_WORDBREAKS".
 # Python overwrites this to something Python-specific in Modules/readline.c, so
@@ -42,10 +46,12 @@ class SearchPath(object):
   """For looking up files in $PATH."""
 
   def __init__(self, mem):
+    # type: (Mem) -> None
     self.mem = mem
     self.cache = {}
 
   def Lookup(self, name, exec_required=True):
+    # type: (str, bool) -> Optional[str]
     """
     Returns the path itself (for relative path), the resolve path, or None.
     """
@@ -80,6 +86,7 @@ class SearchPath(object):
     return None
 
   def CachedLookup(self, name):
+    # type: (str) -> Optional[str]
     if name in self.cache:
       return self.cache[name]
 
@@ -225,19 +232,53 @@ _BASIC_RUNTIME_OPTIONS = [
 ]
 
 _AGGRESSIVE_RUNTIME_OPTIONS = [
-    'simple_echo',  # -sep, -end, --, etc.
+]
+
+# No-ops for bash compatibility
+_NO_OPS = [
+    'expand_aliases', 'extglob', 'lastpipe',  # language features always on
+
+    # Handled one by one
+    'progcomp',
+    'histappend',  # stubbed out for issue #218
+    'hostcomplete',  # complete words with '@' ?
+    'cmdhist',  # multi-line commands in history
+
+    # Copied from https://www.gnu.org/software/bash/manual/bash.txt
+    # except 'compat*' because they were deemed too ugly
+    'assoc_expand_once', 'autocd', 'cdable_vars',
+    'cdspell', 'checkhash', 'checkjobs', 'checkwinsize',
+    'complete_fullquote',  # Set by default
+         # If set, Bash quotes all shell metacharacters in filenames and
+         # directory names when performing completion.  If not set, Bash
+         # removes metacharacters such as the dollar sign from the set of
+         # characters that will be quoted in completed filenames when
+         # these metacharacters appear in shell variable references in
+         # words to be completed.  This means that dollar signs in
+         # variable names that expand to directories will not be quoted;
+         # however, any dollar signs appearing in filenames will not be
+         # quoted, either.  This is active only when bash is using
+         # backslashes to quote completed filenames.  This variable is
+         # set by default, which is the default Bash behavior in versions
+         # through 4.2.
+
+    'direxpand', 'dirspell', 'dotglob', 'execfail',
+    'extdebug',  # for --debugger?
+    'extquote', 'force_fignore', 'globasciiranges',
+    'globstar',  # TODO:  implement **
+    'gnu_errfmt', 'histreedit', 'histverify', 'huponexit',
+    'interactive_comments', 'lithist', 'localvar_inherit', 'localvar_unset',
+    'login_shell', 'mailwarn', 'no_empty_cmd_completion', 'nocaseglob',
+    'nocasematch', 'progcomp_alias', 'promptvars', 'restricted_shell',
+    'shift_verbose', 'sourcepath', 'xpg_echo',
 ]
 
 # Used by core/builtin_comp.py too.
 SHOPT_OPTION_NAMES = [
     'nullglob', 'failglob',
     'inherit_errexit',
-
-    # No-ops for bash compatibility
-    'expand_aliases', 'extglob', 'lastpipe',  # language features always on
-    'progcomp', 'histappend', 'hostcomplete',  # not sure what these are
-    'cmdhist',  # multi-line commands in history
-] + _STRICT_OPTION_NAMES + _BASIC_RUNTIME_OPTIONS + _AGGRESSIVE_RUNTIME_OPTIONS
+] + _NO_OPS + _STRICT_OPTION_NAMES + _BASIC_RUNTIME_OPTIONS + \
+    _AGGRESSIVE_RUNTIME_OPTIONS
 
 # Oil parse options only.
 _BASIC_PARSE_OPTIONS = [
@@ -336,15 +377,8 @@ class ExecOpts(object):
     self.failglob = False
     self.inherit_errexit = False
 
-    # No-ops for bash compatibility.
-    self.expand_aliases = False  # We always expand aliases.
-    self.extglob = False  # extended globs are always on (where implemented)
-    self.lastpipe = False  # Always on in our pipeline implementation.
-
-    self.cmdhist = False  # multi-line commands in history
-    self.histappend = False  # stubbed out for issue #218
-    self.hostcomplete = False  # complete words with '@' ?
-    self.progcomp = False
+    for attr_name in _NO_OPS:
+      setattr(self, attr_name, False)
 
     self.vi = False
     self.emacs = False
@@ -363,7 +397,6 @@ class ExecOpts(object):
     # local still needs to fail.
     self.more_errexit = False
 
-    self.simple_echo = False
     self.simple_test_builtin = False
 
     #
@@ -381,9 +414,11 @@ class ExecOpts(object):
         self._SetOption(name, True)
 
   def ErrExit(self):
+    # type: () -> bool
     return self.errexit.errexit
 
   def GetDollarHyphen(self):
+    # type: () -> str
     chars = []
     if self.interactive:
       chars.append('i')
@@ -426,7 +461,6 @@ class ExecOpts(object):
     if not self.mem.InGlobalNamespace():
       e_die('Syntax options must be set at the top level '
             '(outside any function)')
-    attr = attr[len('parse_'):]  # parse_at -> at
     setattr(self.parse_opts, attr, b)
 
   def SetOption(self, opt_name, b):
@@ -514,8 +548,7 @@ class ExecOpts(object):
       if opt_name in SHOPT_OPTION_NAMES:
         b = getattr(self, opt_name)
       elif opt_name in _PARSE_OPTION_NAMES:
-        attr = opt_name[len('parse_'):]  # parse_at -> at
-        b = getattr(self.parse_opts, attr)
+        b = getattr(self.parse_opts, opt_name)
       else:
         raise args.UsageError('got invalid option %r' % opt_name)
       print('shopt -%s %s' % ('s' if b else 'u', opt_name))
@@ -525,6 +558,7 @@ class _ArgFrame(object):
   """Stack frame for arguments array."""
 
   def __init__(self, argv):
+    # type: (List[str]) -> None
     self.argv = argv
     self.num_shifted = 0
 
@@ -545,6 +579,7 @@ class _ArgFrame(object):
     return value.Str(str(self.argv[index]))
 
   def GetArgv(self):
+    # () -> List[str]
     return self.argv[self.num_shifted : ]
 
   def GetNumArgs(self):
@@ -793,6 +828,7 @@ class Mem(object):
         scope_e.GlobalOnly)
 
   def SetCurrentSpanId(self, span_id):
+    # type: (int) -> None
     """Set the current source location, for BASH_SOURCE, BASH_LINENO, LINENO,
     etc.
 
@@ -847,6 +883,7 @@ class Mem(object):
   #
 
   def PushCall(self, func_name, def_spid, argv):
+    # type: (str, int, List[str]) -> None
     """For function calls."""
     self.argv_stack.append(_ArgFrame(argv))
     self.var_stack.append({})
@@ -859,6 +896,7 @@ class Mem(object):
     self.bash_source.append(source_str)
 
   def PopCall(self):
+    # type: () -> None
     self.bash_source.pop()
     self._PopDebugStack()
 
@@ -866,6 +904,7 @@ class Mem(object):
     self.argv_stack.pop()
 
   def PushSource(self, source_name, argv):
+    # type: (str, List[str]) -> None
     """For 'source foo.sh 1 2 3."""
     if argv:
       self.argv_stack.append(_ArgFrame(argv))
@@ -875,22 +914,26 @@ class Mem(object):
     self.bash_source.append(source_name)
 
   def PopSource(self, argv):
+    # type: (List[str]) -> None
     self.bash_source.pop()
     self._PopDebugStack()
     if argv:
       self.argv_stack.pop()
 
   def PushTemp(self):
+    # type: () -> None
     """For the temporary scope in 'FOO=bar BAR=baz echo'."""
     # We don't want the 'read' builtin to write to this frame!
     self.var_stack.append({})
     self._PushDebugStack(None, None)
 
   def PopTemp(self):
+    # type: () -> None
     self._PopDebugStack()
     self.var_stack.pop()
 
   def TopNamespace(self):
+    # type: () -> Dict[str, runtime_asdl.cell]
     """For evalblock()."""
     return self.var_stack[-1]
 
@@ -926,12 +969,14 @@ class Mem(object):
       return 1  # silent error
 
   def GetArgNum(self, arg_num):
+    # type: (int) -> value__Str
     if arg_num == 0:
       return value.Str(self.dollar0)
 
     return self.argv_stack[-1].GetArgNum(arg_num)
 
   def GetArgv(self):
+    # type: () -> List[str]
     """For $* and $@."""
     return self.argv_stack[-1].GetArgv()
 
@@ -945,6 +990,7 @@ class Mem(object):
   #
 
   def GetSpecialVar(self, op_id):
+    # type: (int) -> value_t
     if op_id == Id.VSub_Bang:  # $!
       n = self.last_bg_pid
       if n == -1:
@@ -1030,13 +1076,15 @@ class Mem(object):
 
   def SetVar(self, lval, val, flags_to_set, lookup_mode, flags_to_clear=(),
              keyword_id=None):
+    # type: (lvalue_t, value_t, Tuple[var_flags_t, ...], scope_t, Tuple[var_flags_t, ...], Optional[Id_t]) -> None
     """
     Args:
       lval: lvalue
       val: value, or None if only changing flags
       flags_to_set: tuple of flags to set: ReadOnly | Exported
         () means no flags to start with
-      scope:
+
+      lookup_mode:
         Local | Global | Dynamic - for builtins, PWD, etc.
 
       NOTE: in bash, PWD=/ changes the directory.  But not in dash.
@@ -1194,6 +1242,7 @@ class Mem(object):
     cell.val = new_val
 
   def GetVar(self, name, lookup_mode=scope_e.Dynamic):
+    # type: (str, scope_t) -> value_t
     assert isinstance(name, str), name
 
     # TODO: Short-circuit down to _FindCellAndNamespace by doing a single hash
@@ -1261,10 +1310,10 @@ class Mem(object):
       return value.MaybeStrArray(strs)  # TODO: Reuse this object too?
 
     if name == 'LINENO':
+      assert self.current_spid != -1, self.current_spid
       span = self.arena.GetLineSpan(self.current_spid)
       # TODO: maybe use interned GetLineNumStr?
-      s = str(self.arena.GetLineNumber(span.line_id))
-      self.line_num.s = s
+      self.line_num.s = str(self.arena.GetLineNumber(span.line_id))
       return self.line_num
 
     # This is OSH-specific.  Get rid of it in favor of ${BASH_SOURCE[0]} ?
@@ -1329,6 +1378,7 @@ class Mem(object):
       return False
 
   def GetExported(self):
+    # type: () -> List[str]
     """Get all the variables that are marked exported."""
     # TODO: This is run on every SimpleCommand.  Should we have a dirty flag?
     # We have to notice these things:
@@ -1356,6 +1406,17 @@ class Mem(object):
       for name, _ in scope.iteritems():
         yield name
 
+  def VarNamesStartingWith(self, prefix):
+    # type: (str) -> List[str]
+    """For ${!prefix@}"""
+    # Look up the stack, yielding all variables.  Bash seems to do this.
+    names = []
+    for scope in self.var_stack:
+      for name, _ in scope.iteritems():
+        if name.startswith(prefix):
+          names.append(name)
+    return names
+
   def GetAllVars(self):
     """Get all variables and their values, for 'set' builtin. """
     result = {}
@@ -1367,6 +1428,7 @@ class Mem(object):
 
 
 def SetLocalString(mem, name, s):
+  # type: (Mem, str, str) -> None
   """Set a local string.
 
   Used for:

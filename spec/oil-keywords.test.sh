@@ -1,10 +1,9 @@
-#### Keywords
+# Oil Keywords
 
-
-### pp
-pp 1 + 2 * 3
+#### = to pretty print
+= 1 + 2 * 3
 ## STDOUT:
-(int)   7
+(Int)   7
 ## END
 
 #### pass

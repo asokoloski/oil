@@ -157,7 +157,7 @@ osh-version-text() {
   echo
 
   echo ---
-  local my_busybox=_tmp/spec-bin/busybox-1.22.0/busybox
+  local my_busybox=_tmp/spec-bin/busybox-1.31.1/busybox
   if test -f $my_busybox; then
     { $my_busybox || true; } | head -n 1
     ls -l $my_busybox
@@ -188,7 +188,7 @@ sh-spec() {
   local tmp_env=$this_dir/../_tmp/spec-tmp/$(basename $test_file)
   mkdir -p $tmp_env
 
-  test/sh_spec.py \
+  PYTHONPATH=. test/sh_spec.py \
       --tmp-env $tmp_env \
       --path-env "$this_dir/../spec/bin:/bin:/usr/bin" \
       "$test_file" \
@@ -209,7 +209,7 @@ trace-var-sub() {
 
   # This prints trace with line numbers to stdout.
   #python -m trace --trace -C $out \
-  python -m trace --trackcalls -C $out \
+  PYTHONPATH=. python -m trace --trackcalls -C $out \
     test/sh_spec.py spec/var-sub.test.sh $DASH $BASH "$@"
 
   ls -l $out
@@ -352,7 +352,7 @@ loop() {
 }
 
 case_() {
-  sh-spec spec/case_.test.sh --osh-failures-allowed 2 \
+  sh-spec spec/case_.test.sh --osh-failures-allowed 3 \
     ${REF_SHELLS[@]} $OSH_LIST "$@"
 }
 
@@ -378,7 +378,7 @@ builtin-io() {
 
 # Special bash printf things like -v and %q.  Portable stuff goes in builtin-io.
 builtin-printf() {
-  sh-spec spec/builtin-printf.test.sh \
+  sh-spec spec/builtin-printf.test.sh --osh-failures-allowed 1 \
     ${REF_SHELLS[@]} $ZSH $BUSYBOX_ASH $OSH_LIST "$@"
 }
 
@@ -428,6 +428,10 @@ builtin-special() {
     ${REF_SHELLS[@]} $ZSH $OSH_LIST "$@"
 }
 
+builtin-times() {
+  sh-spec spec/builtin-times.test.sh $BASH $ZSH $OSH_LIST "$@"
+}
+
 command-parsing() {
   sh-spec spec/command-parsing.test.sh ${REF_SHELLS[@]} $OSH_LIST "$@"
 }
@@ -442,7 +446,7 @@ sh-func() {
 }
 
 glob() {
-  sh-spec spec/glob.test.sh --osh-failures-allowed 4 \
+  sh-spec spec/glob.test.sh --osh-failures-allowed 5 \
     ${REF_SHELLS[@]} $BUSYBOX_ASH $OSH_LIST "$@"
 }
 
@@ -498,7 +502,7 @@ posix() {
 }
 
 special-vars() {
-  sh-spec spec/special-vars.test.sh --osh-failures-allowed 4 \
+  sh-spec spec/special-vars.test.sh --cd-tmp --osh-failures-allowed 4 \
     ${REF_SHELLS[@]} $ZSH $OSH_LIST "$@"
 }
 
@@ -523,18 +527,24 @@ var-op-len() {
 }
 
 var-op-patsub() {
-  sh-spec spec/var-op-patsub.test.sh \
+  # 1 unicode failure
+  sh-spec spec/var-op-patsub.test.sh --osh-failures-allowed 1 \
     $BASH $MKSH $ZSH $OSH_LIST "$@"
 }
 
 var-op-other() {
   # dash doesn't support any of these operations
-  sh-spec spec/var-op-other.test.sh --osh-failures-allowed 2 \
+  sh-spec spec/var-op-other.test.sh --osh-failures-allowed 0 \
     $BASH $MKSH $ZSH $OSH_LIST "$@"
 }
 
+var-op-bash() {
+  sh-spec spec/var-op-bash.test.sh --osh-failures-allowed 2 \
+    $BASH $OSH_LIST "$@"
+}
+
 var-op-strip() {
-  sh-spec spec/var-op-strip.test.sh --osh-failures-allowed 1 \
+  sh-spec spec/var-op-strip.test.sh \
     ${REF_SHELLS[@]} $ZSH $BUSYBOX_ASH $OSH_LIST "$@"
 }
 
@@ -669,7 +679,8 @@ extended-glob() {
 
 # This does string matching.
 extglob-match() {
-  sh-spec spec/extglob-match.test.sh $BASH $MKSH $OSH_LIST "$@"
+  sh-spec spec/extglob-match.test.sh \
+    $BASH $MKSH $OSH_LIST "$@"
 }
 
 # ${!var} syntax -- oil should replace this with associative arrays.
@@ -824,6 +835,11 @@ oil-builtins() {
     $OSH_LIST "$@"
 }
 
+oil-json() {
+  sh-spec spec/oil-json.test.sh --cd-tmp --osh-failures-allowed 0 \
+    $OSH_LIST "$@"
+}
+
 oil-options() {
   sh-spec spec/oil-options.test.sh --cd-tmp --osh-failures-allowed 1 \
     $OSH_LIST "$@"
@@ -845,7 +861,7 @@ oil-slice-range() {
 }
 
 oil-regex() {
-  sh-spec spec/oil-regex.test.sh --cd-tmp --osh-failures-allowed 1 \
+  sh-spec spec/oil-regex.test.sh --cd-tmp --osh-failures-allowed 2 \
     $OSH_LIST "$@"
 }
 

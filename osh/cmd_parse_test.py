@@ -7,9 +7,9 @@ import unittest
 
 from _devbuild.gen.id_kind_asdl import Id
 from _devbuild.gen.syntax_asdl import command_e
+from core import error
 from core import test_lib
 from core import ui
-from core import util
 
 from osh import word_
 
@@ -21,7 +21,7 @@ def _assertParseMethod(test, code_str, method, expect_success=True):
   try:
     node = m()
 
-  except util.ParseError as e:
+  except error.Parse as e:
     ui.PrettyPrintError(e, arena)
     if expect_success:
       test.fail('%r failed' % code_str)
@@ -40,7 +40,7 @@ def _assert_ParseCommandListError(test, code_str):
 
   try:
     node = c_parser._ParseCommandLine()
-  except util.ParseError as e:
+  except error.Parse as e:
     ui.PrettyPrintError(e, arena)
   else:
     print('UNEXPECTED:')
@@ -185,7 +185,7 @@ def assertHereDocToken(test, expected_token_val, node):
   """A sanity check for some ad hoc tests."""
   test.assertEqual(1, len(node.redirects))
   h = node.redirects[0]
-  test.assertEqual(expected_token_val, h.stdin_parts[0].token.val)
+  test.assertEqual(expected_token_val, h.stdin_parts[0].val)
 
 
 class HereDocTest(unittest.TestCase):
@@ -723,7 +723,7 @@ fi
     self.assertEqual(Id.BoolBinary_EqualTilde, node.expr.op_id)
     right = node.expr.right
     self.assertEqual(5, len(right.parts))
-    self.assertEqual('(', right.parts[0].token.val)
+    self.assertEqual('(', right.parts[0].val)
 
     # TODO: Implement BASH_REGEX_CHARS
     return
@@ -761,8 +761,8 @@ fi
 
     # Redirects
     node = assert_ParseCommandList(self, 'foo() { echo hi; } 1>&2 2>/dev/null')
-    self.assertEqual(2, len(node.redirects))
     self.assertEqual(command_e.BraceGroup, node.body.tag)
+    self.assertEqual(2, len(node.body.redirects))
 
   def testParseKeyword(self):
     # NOTE: It chooses the longest match, which is Lit_Chars>

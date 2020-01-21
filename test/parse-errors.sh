@@ -19,6 +19,33 @@ banner() {
 }
 
 _error-case() {
+  ### Assert that a parse error happens without running the program
+
+  banner "$@"
+  echo
+
+  # TODO: Change when osh_parse supports -n -c.
+
+  #$SH -n -c "$@"
+  $SH -c "$@"
+
+  # NOTE: This works with osh, not others.
+  local status=$?
+  if test $status != 2; then
+    die "Expected status 2, got $status"
+  fi
+}
+
+_runtime-parse-error() {
+  ### Assert that a parse error happens at runtime
+
+  case $SH in
+    *osh_parse.asan)
+      echo 'skipping _runtime-parse-error'
+      return
+      ;;
+  esac
+
   banner "$@"
   echo
   $SH -c "$@"
@@ -31,6 +58,15 @@ _error-case() {
 }
 
 _oil-parse-error() {
+  ### Assert that a parse error happens with Oil options on
+
+  case $SH in
+    *osh_parse.asan)
+      echo 'skipping _oil-parse-error'
+      return
+      ;;
+  esac
+
   banner "$@"
   echo
   $SH -O oil:all -c "$@"
@@ -132,14 +168,17 @@ arith-context() {
   _error-case 'echo $(( '
   _error-case 'echo $(( 1'
 
-  # Non-standard arith sub $[1 + 2]
-  _error-case 'echo $[ 1 + 2 ;'
+  # Disable Oil stuff for osh_parse.asan
+  if false; then
+    # Non-standard arith sub $[1 + 2]
+    _error-case 'echo $[ 1 + 2 ;'
 
-  # What's going on here?   No location info?
-  _error-case 'echo $[ 1 + 2 /'
+    # What's going on here?   No location info?
+    _error-case 'echo $[ 1 + 2 /'
 
-  _error-case 'echo $[ 1 + 2 / 3'
-  _error-case 'echo $['
+    _error-case 'echo $[ 1 + 2 / 3'
+    _error-case 'echo $['
+  fi
 
   # (( ))
   _error-case '(( 1 + 2 /'
@@ -211,9 +250,12 @@ bool-expr() {
   # Wrong error message
   _error-case '[[ a == ]]'
 
-  # Invalid regex
-  _error-case '[[ $var =~ * ]]'
-  _error-case '[[ $var =~ + ]]'
+  if false; then
+    # Invalid regex
+    # These are currently only detected at runtime.
+    _error-case '[[ $var =~ * ]]'
+    _error-case '[[ $var =~ + ]]'
+  fi
 
   # Unbalanced parens
   _error-case '[[ ( 1 == 2 - ]]'
@@ -234,21 +276,21 @@ test-builtin() {
   # osh/builtin_bracket.py.
 
   # Extra token
-  _error-case '[ x -a y f ]'
-  _error-case 'test x -a y f'
+  _runtime-parse-error '[ x -a y f ]'
+  _runtime-parse-error 'test x -a y f'
 
   # Missing closing ]
-  _error-case '[ x '
+  _runtime-parse-error '[ x '
 
   # Hm some of these errors are wonky.  Need positions.
-  _error-case '[ x x ]'
+  _runtime-parse-error '[ x x ]'
 
-  _error-case '[ x x "a b" ]'
+  _runtime-parse-error '[ x x "a b" ]'
 
   # This is a runtime error but is handled similarly
-  _error-case '[ -t xxx ]'
+  _runtime-parse-error '[ -t xxx ]'
 
-  _error-case '[ \( x -a -y -a z ]'
+  _runtime-parse-error '[ \( x -a -y -a z ]'
 
   # -o tests if an option is enabled.
   #_error-case '[ -o x ]'
@@ -256,28 +298,28 @@ test-builtin() {
 
 printf-builtin() {
   set +o errexit
-  _error-case 'printf %'
-  _error-case 'printf [%Z]'
+  _runtime-parse-error 'printf %'
+  _runtime-parse-error 'printf [%Z]'
 
-  _error-case 'printf -v "-invalid-" %s foo'
+  _runtime-parse-error 'printf -v "-invalid-" %s foo'
 }
 
 other-builtins() {
   set +o errexit
 
-  _error-case 'shift 1 2'
-  _error-case 'shift zzz'
+  _runtime-parse-error 'shift 1 2'
+  _runtime-parse-error 'shift zzz'
 
-  _error-case 'pushd x y'
-  _error-case 'pwd -x'
+  _runtime-parse-error 'pushd x y'
+  _runtime-parse-error 'pwd -x'
 
-  _error-case 'repr foo a-x'
+  _runtime-parse-error 'repr foo a-x'
 
-  _error-case 'wait zzz'
-  _error-case 'wait %jobspec-not-supported'
+  _runtime-parse-error 'wait zzz'
+  _runtime-parse-error 'wait %jobspec-not-supported'
 
-  _error-case 'unset invalid-var-name'
-  _error-case 'getopts 'hc:' invalid-var-name'
+  _runtime-parse-error 'unset invalid-var-name'
+  _runtime-parse-error 'getopts 'hc:' invalid-var-name'
 }
 
 quoted-strings() {
@@ -296,6 +338,16 @@ quoted-strings() {
   'unterminated single multiline
   line 1
   line 2"
+}
+
+braced-var-sub() {
+  set +o errexit
+
+  # These should have ! for a prefix query
+  _error-case 'echo ${x*}'
+  _error-case 'echo ${x@}'
+
+  _error-case 'echo ${x.}'
 }
 
 cmd-parse() {
@@ -409,12 +461,12 @@ here-doc-delimiter() {
 
 args-parse-builtin() {
   set +o errexit
-  _error-case 'read -x'  # invalid
+  _runtime-parse-error 'read -x'  # invalid
 
-  _error-case 'read -n'  # expected argument for -n
-  _error-case 'read -n x'  # expected integer
+  _runtime-parse-error 'read -n'  # expected argument for -n
+  _runtime-parse-error 'read -n x'  # expected integer
 
-  _error-case 'set -o errexit +o oops'
+  _runtime-parse-error 'set -o errexit +o oops'
 
   # not implemented yet
   #_error-case 'read -t x'  # expected floating point number
@@ -427,9 +479,9 @@ args-parse-builtin() {
 # aiding the transition
 args-parse-more() {
   set +o errexit
-  _error-case 'set -z'
-  _error-case 'shopt -s foo'
-  _error-case 'shopt -z'
+  _runtime-parse-error 'set -z'
+  _runtime-parse-error 'shopt -s foo'
+  _runtime-parse-error 'shopt -z'
 }
 
 args-parse-main() {
@@ -462,6 +514,9 @@ invalid-brace-ranges() {
 oil-language() {
   set +o errexit
 
+  # disabled until we port the parser
+  case $SH in *osh_parse.asan) return ;; esac
+
   # Unterminated
   _error-case 'var x = 1 + '
 
@@ -479,8 +534,8 @@ push-builtin() {
   set +o errexit
 
   # Unterminated
-  _error-case 'push'
-  _error-case 'push invalid-'
+  _runtime-parse-error 'push'
+  _runtime-parse-error 'push invalid-'
   #_error-case 'push notarray'  # returns status 1
 }
 
@@ -525,21 +580,25 @@ regex_literals() {
   # These are too long too
   _oil-parse-error 'var x = /[abc]/'
 
-  # Single chars not allowed, should be /['abc']/
-  _oil-parse-error 'var x = /[a b c]/'
+  # Single chars not allowed, should be /['%_']/
+  _oil-parse-error 'var x = /[% _]/'
 
 }
 
 oil_expr() {
   set +o errexit
   # % is not a token
-  _oil-parse-error 'pp 5 % 3'
-  _oil-parse-error 'pp >>='
-  _oil-parse-error 'pp %('
+  _oil-parse-error '= 5 % 3'
+  _oil-parse-error '= >>='
+  _oil-parse-error '= %('
 
   # Singleton tuples
-  _oil-parse-error 'pp 42,'
-  _oil-parse-error 'pp (42,)'
+  _oil-parse-error '= 42,'
+  _oil-parse-error '= (42,)'
+
+  # parse_equals
+  _oil-parse-error '=a'
+  _oil-parse-error 'name=val'
 }
 
 
@@ -559,6 +618,7 @@ cases-in-strings() {
   array-literal
   patsub
   quoted-strings
+  braced-var-sub
 
   # Arith
   arith-context
@@ -586,7 +646,8 @@ cases-in-strings() {
 
 # Cases in their own file
 cases-in-files() {
-  set +o errexit  # Don't fail
+  # Don't fail
+  set +o errexit
 
   for t in test/parse-errors/*.sh; do
     banner $t
@@ -608,7 +669,17 @@ all() {
 }
 
 run-for-release() {
+  ### Test with bin/osh and the ASAN binary.
+
   run-other-suite-for-release parse-errors all
+
+  # Done in _oil-native-build
+  #build/mycpp.sh compile-osh-parse-asan
+
+  # TODO: osh_parse should accept -n -c
+  local out=_tmp/other/parse-errors-oil-native.txt
+  ASAN_OPTIONS=detect_leaks=0 SH=_bin/osh_parse.asan \
+    run-other-suite-for-release parse-errors all $out
 }
 
 "$@"

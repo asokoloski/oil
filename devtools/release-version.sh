@@ -7,7 +7,7 @@ set -o nounset
 set -o pipefail
 set -o errexit
 
-source devtools/common.sh
+source test/common.sh  # html-head
 
 # NOTE: Left to right evaluation would be nice on this!
 #
@@ -56,44 +56,21 @@ _git-changelog-header() {
   local prev_branch=$1
   local cur_branch=$2
 
-  cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Commits Between $prev_branch and $cur_branch</title>
-    <style>
-      /* Make it centered and skinny for readability */
-      body {
-        margin: 0 auto;
-        width: 60em;
-      }
-      table {
-        width: 100%;
-      }
-      code {
-        color: green;
-      }
-      .checksum {
-        font-family: monospace;
-      }
-      .date {
-        /*font-family: monospace;*/
-      }
-      .subject {
-        font-family: monospace;
-      }
+  html-head --title "Commits Between Branches $prev_branch and $cur_branch" \
+    'web/base.css' 'web/changelog.css'
 
-      /* Copied from oilshell.org bundle.css */
-      .date {
-        font-size: medium;
-        color: #555;
-        padding-left: 1em;
-      }
-    </style>
-  </head>
-  <body>
+  cat <<EOF
+  <body class="width60">
     <h3>Commits Between Branches <code>$prev_branch</code> and
        <code>$cur_branch</code></h3>
+    <table>
+      <colgroup>
+        <col>
+        <col>
+        <col>
+        <!-- prevent long commits from causing wrapping in other cells -->
+        <col style="width: 40em">
+      </colgroup>
 EOF
 # Doesn't seem necessary now.
 #     <thead>
@@ -106,11 +83,13 @@ EOF
 }
 
 _git-changelog() {
-  echo '<table>'
   _git-changelog-header "$@"
   _git-changelog-body "$@"
-  echo '</table>'
-  html-footer
+  cat <<EOF
+    </table>
+  </body>
+</html>
+EOF
 }
 
 git-changelog-0.1() {
@@ -315,6 +294,42 @@ git-changelog-0.7.pre5() {
     > _release/VERSION/changelog.html
 }
 
+git-changelog-0.7.pre6() {
+  _git-changelog origin/release/0.7.pre5 release/0.7.pre6 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.pre7() {
+  _git-changelog origin/release/0.7.pre6 release/0.7.pre7 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.pre8() {
+  _git-changelog origin/release/0.7.pre7 release/0.7.pre8 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.pre9() {
+  _git-changelog origin/release/0.7.pre8 release/0.7.pre9 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.pre10() {
+  _git-changelog origin/release/0.7.pre9 release/0.7.pre10 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.pre11() {
+  _git-changelog origin/release/0.7.pre10 release/0.7.pre11 \
+    > _release/VERSION/changelog.html
+}
+
+git-changelog-0.7.0() {
+  _git-changelog origin/release/0.7.pre11 release/0.7.0 \
+    > _release/VERSION/changelog.html
+}
+
+
 # For announcement.html
 html-redirect() {
   local url=$1
@@ -332,11 +347,8 @@ EOF
 }
 
 no-announcement() {
+  html-head --title 'No announcement'
   cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-  </head>
   <body>
     <p>No announcement for this release.  Previous announcements are tagged
     with #<a href="/blog/tags.html?tag=oil-release#oil-release">oil-release</a>.
@@ -476,6 +488,38 @@ announcement-0.7.pre4() {
 
 announcement-0.7.pre5() {
   write-no-announcement
+}
+
+announcement-0.7.pre6() {
+  html-redirect '/blog/2016/12/09.html' > $SITE_DEPLOY_DIR/release/0.7.pre6/announcement.html
+}
+
+announcement-0.7.pre7() {
+  html-redirect '/blog/2019/12/09.html' > $SITE_DEPLOY_DIR/release/0.7.pre7/announcement.html
+}
+
+announcement-0.7.pre8() {
+  html-redirect '/blog/2019/12/09.html' > $SITE_DEPLOY_DIR/release/0.7.pre8/announcement.html
+}
+
+announcement-0.7.pre9() {
+  html-redirect '/blog/2019/12/09.html' > $SITE_DEPLOY_DIR/release/0.7.pre9/announcement.html
+}
+
+announcement-0.7.pre10() {
+  write-no-announcement
+}
+
+announcement-0.7.pre11() {
+  write-no-announcement
+}
+
+announcement-0.7.0() {
+  write-no-announcement
+}
+
+blog-redirect() {
+  html-redirect 'making-plans.html' > $SITE_DEPLOY_DIR/blog/2020/01/11.html
 }
 
 

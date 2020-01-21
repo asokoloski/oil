@@ -1,5 +1,35 @@
+---
+in_progress: yes
+---
+
 Oil Word Language Extensions
 ============================
+
+<div id="toc">
+</div>
+
+
+## Inline function Calls
+
+### That Return Strings
+
+```
+echo $stringfunc(x, y)
+```
+
+NOTE: `"__$stringfunc(x, y)__"` doesn't work.  Do this instead:
+
+```
+var s = stringfunc(x, y)
+echo "__$s__"
+```
+
+### That Return Arrays
+
+```
+cc -o foo -- @arrayfunc(x, y)
+```
+
 
 ```
 @array

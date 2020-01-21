@@ -7,10 +7,10 @@ import sys
 import unittest
 
 from _devbuild.gen.id_kind_asdl import Id
-from _devbuild.gen.syntax_asdl import word_part_e, token
-from _devbuild.gen.syntax_asdl import word
+from _devbuild.gen.syntax_asdl import word_part_e, compound_word
 from asdl import format as fmt
 from core.util import log
+from core.test_lib import Tok
 from osh import braces  # module under test
 from osh import word_parse_test
 
@@ -45,7 +45,7 @@ class BracesTest(unittest.TestCase):
         ('z..a..-1', ('z', 'a', -1)),
     ]
     for s, expected in CASES:
-      tok = token(Id.Lit_Chars, s)
+      tok = Tok(Id.Lit_Chars, s)
       part = braces._RangePartDetect(tok)
       if expected is None:
         self.assert_(part is None)
@@ -146,7 +146,7 @@ class BracesTest(unittest.TestCase):
     results = braces._BraceExpand(w.parts)
     self.assertEqual(1, len(results))
     for parts in results:
-      _PrettyPrint(word.Compound(parts))
+      _PrettyPrint(compound_word(parts))
       print('')
 
     w = _assertReadWord(self, 'B-{a,b}-E')
@@ -157,7 +157,7 @@ class BracesTest(unittest.TestCase):
     results = braces._BraceExpand(tree.parts)
     self.assertEqual(2, len(results))
     for parts in results:
-      _PrettyPrint(word.Compound(parts))
+      _PrettyPrint(compound_word(parts))
       print('')
 
     w = _assertReadWord(self, 'B-{a,={b,c,d}=,e}-E')
@@ -168,7 +168,7 @@ class BracesTest(unittest.TestCase):
     results = braces._BraceExpand(tree.parts)
     self.assertEqual(5, len(results))
     for parts in results:
-      _PrettyPrint(word.Compound(parts))
+      _PrettyPrint(compound_word(parts))
       print('')
 
     w = _assertReadWord(self, 'B-{a,b}-{c,d}-E')
@@ -179,7 +179,7 @@ class BracesTest(unittest.TestCase):
     results = braces._BraceExpand(tree.parts)
     self.assertEqual(4, len(results))
     for parts in results:
-      _PrettyPrint(word.Compound(parts))
+      _PrettyPrint(compound_word(parts))
       print('')
 
 

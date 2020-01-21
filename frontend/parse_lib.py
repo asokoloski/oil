@@ -4,8 +4,11 @@ parse_lib.py - Consolidate various parser instantiations here.
 
 from _devbuild.gen.id_kind_asdl import Id_t
 from _devbuild.gen.syntax_asdl import (
-    token, command_t, expr_t, word_t, redir_t, word__Compound,
-    name_type, command__Proc, command__Func, arg_list,
+    Token, compound_word,
+    command_t, command__VarDecl, command__PlaceMutation, command__Proc,
+    command__Func,
+    expr_t, word_t, redir_t,
+    arg_list, name_type,
 )
 from _devbuild.gen.types_asdl import lex_mode_e
 from _devbuild.gen import grammar_nt
@@ -14,14 +17,15 @@ from core import meta
 from core.util import p_die
 from frontend import lexer
 from frontend import reader
-from frontend import tdop
 from frontend import match
 
 from oil_lang import expr_parse
 from oil_lang import expr_to_ast
+from osh import tdop
 from osh import arith_parse
 from osh import cmd_parse
 from osh import word_parse
+from mycpp import mylib
 
 from typing import Any, List, Tuple, Dict, Optional, IO, TYPE_CHECKING
 if TYPE_CHECKING:
@@ -29,7 +33,7 @@ if TYPE_CHECKING:
   from core.util import DebugFile
   from frontend.lexer import Lexer
   from frontend.reader import _Reader
-  from frontend.tdop import TdopParser
+  from osh.tdop import TdopParser
   from osh.word_parse import WordParser
   from osh.cmd_parse import CommandParser
   from pgen2.grammar import Grammar
@@ -41,7 +45,7 @@ class _BaseTrail(object):
     # type: () -> None
     # word from a partially completed command.
     # Filled in by _ScanSimpleCommand in osh/cmd_parse.py.
-    self.words = []  # type: List[word__Compound]
+    self.words = []  # type: List[compound_word]
     self.redirects = []  # type: List[redir_t]
     # TODO: We should maintain the LST invariant and have a single list, but
     # that I ran into the "cases classes are better than variants" problem.
@@ -55,9 +59,9 @@ class _BaseTrail(object):
     # This could complete $foo.
     # Problem: readline doesn't even allow that, because it spans more than one
     # line!
-    self.tokens = []  # type: List[token]
+    self.tokens = []  # type: List[Token]
 
-    self.alias_words = []  # type: List[word__Compound]  # words INSIDE an alias expansion
+    self.alias_words = []  # type: List[compound_word]  # words INSIDE an alias expansion
     self.expanding_alias = False
 
   def Clear(self):
@@ -65,11 +69,11 @@ class _BaseTrail(object):
     pass
 
   def SetLatestWords(self, words, redirects):
-    # type: (List[word__Compound], List[redir_t]) -> None
+    # type: (List[compound_word], List[redir_t]) -> None
     pass
 
   def AppendToken(self, token):
-    # type: (token) -> None
+    # type: (Token) -> None
     pass
 
   def BeginAliasExpansion(self):
@@ -80,29 +84,30 @@ class _BaseTrail(object):
     # type: () -> None
     pass
 
-  def PrintDebugString(self, debug_f):
-    # type: (DebugFile) -> None
+  if mylib.PYTHON:
+    def PrintDebugString(self, debug_f):
+      # type: (DebugFile) -> None
 
-    # note: could cast DebugFile to IO[str] instead of ignoring?
-    debug_f.log('  words:')
-    for w in self.words:
-      w.PrettyPrint(f=debug_f)  # type: ignore
-    debug_f.log('')
+      # note: could cast DebugFile to IO[str] instead of ignoring?
+      debug_f.log('  words:')
+      for w in self.words:
+        w.PrettyPrint(f=debug_f)  # type: ignore
+      debug_f.log('')
 
-    debug_f.log('  redirects:')
-    for r in self.redirects:
-      r.PrettyPrint(f=debug_f)  # type: ignore
-    debug_f.log('')
+      debug_f.log('  redirects:')
+      for r in self.redirects:
+        r.PrettyPrint(f=debug_f)  # type: ignore
+      debug_f.log('')
 
-    debug_f.log('  tokens:')
-    for p in self.tokens:
-      p.PrettyPrint(f=debug_f)  # type: ignore
-    debug_f.log('')
+      debug_f.log('  tokens:')
+      for p in self.tokens:
+        p.PrettyPrint(f=debug_f)  # type: ignore
+      debug_f.log('')
 
-    debug_f.log('  alias_words:')
-    for w in self.alias_words:
-      w.PrettyPrint(f=debug_f)  # type: ignore
-    debug_f.log('')
+      debug_f.log('  alias_words:')
+      for w in self.alias_words:
+        w.PrettyPrint(f=debug_f)  # type: ignore
+      debug_f.log('')
 
   def __repr__(self):
     # type: () -> str
@@ -129,7 +134,7 @@ class Trail(_BaseTrail):
     del self.alias_words[:]
 
   def SetLatestWords(self, words, redirects):
-    # type: (List[word__Compound], List[redir_t]) -> None
+    # type: (List[compound_word], List[redir_t]) -> None
     if self.expanding_alias:
       self.alias_words = words  # Save these separately
       return
@@ -137,7 +142,7 @@ class Trail(_BaseTrail):
     self.redirects = redirects
 
   def AppendToken(self, token):
-    # type: (token) -> None
+    # type: (Token) -> None
     if self.expanding_alias:  # We don't want tokens inside aliases
       return
     self.tokens.append(token)
@@ -170,65 +175,66 @@ if TYPE_CHECKING:
   AliasesInFlight = List[Tuple[str, int]]
 
 
-def MakeGrammarNames(oil_grammar):
-  # type: (Grammar) -> Dict[int, str]
+if mylib.PYTHON:
+  def MakeGrammarNames(oil_grammar):
+    # type: (Grammar) -> Dict[int, str]
 
-  # TODO: Break this dependency
-  from frontend import lex
+    # TODO: Break this dependency
+    from frontend import lex
 
-  names = {}
+    names = {}
 
-  #from _devbuild.gen.id_kind_asdl import _Id_str
-  # This is a dictionary
+    #from _devbuild.gen.id_kind_asdl import _Id_str
+    # This is a dictionary
 
-  # _Id_str()
+    # _Id_str()
 
-  for id_name, k in lex.ID_SPEC.id_str2int.items():
-    # Hm some are out of range
-    #assert k < 256, (k, id_name)
+    for id_name, k in lex.ID_SPEC.id_str2int.items():
+      # Hm some are out of range
+      #assert k < 256, (k, id_name)
 
-    # HACK: Cut it off at 256 now!  Expr/Arith/Op doesn't go higher than
-    # that.  TODO: Change NT_OFFSET?  That might affect C code though.
-    # Best to keep everything fed to pgen under 256.  This only affects
-    # pretty printing.
-    if k < 256:
-      names[k] = id_name
+      # HACK: Cut it off at 256 now!  Expr/Arith/Op doesn't go higher than
+      # that.  TODO: Change NT_OFFSET?  That might affect C code though.
+      # Best to keep everything fed to pgen under 256.  This only affects
+      # pretty printing.
+      if k < 256:
+        names[k] = id_name
 
-  for k, v in oil_grammar.number2symbol.items():
-    # eval_input == 256.  Remove?
-    assert k >= 256, (k, v)
-    names[k] = v
+    for k, v in oil_grammar.number2symbol.items():
+      # eval_input == 256.  Remove?
+      assert k >= 256, (k, v)
+      names[k] = v
 
-  return names
+    return names
 
 
 class OilParseOptions(object):
 
   def __init__(self):
     # type: () -> None
-    self.at = False  # @foo, @array(a, b)
-    self.brace = False  # cd /bin { ... }
-    self.paren = False  # if (x > 0) ...
+    self.parse_at = False  # @foo, @array(a, b)
+    self.parse_brace = False  # cd /bin { ... }
+    self.parse_paren = False  # if (x > 0) ...
 
     # Should this also change r''' c''' and and c"""?  Those are hard to
     # do in command mode without changing the lexer, but useful because of
     # redirects.  Maybe r' and c' are tokens, and then you look for '' after
     # it?  If it's off and you get the token, then you change it into
-    # word_part__Literal and start parsing.
+    # word_part::Literal and start parsing.
     #
     # proc foo {
     #   cat << c'''
     #   hello\n
     #   '''
     # }
-    self.rawc = False  # echo r'' c''
-    self.index_expr = False  # ${a[1 + f(x)]}
+    self.parse_rawc = False  # echo r'' c''
+    self.parse_index_expr = False  # ${a[1 + f(x)]}
 
     # all:nice
-    self.equals = False  # x = 'var'
-    self.set = False  # set x = 'var'
+    self.parse_equals = False  # x = 'var'
+    self.parse_set = False  # set x = 'var'
 
-    self.do = False  # do f(x)
+    self.parse_do = False  # do f(x)
 
   #def __str__(self):
   #  return str(self.__dict__)
@@ -240,9 +246,8 @@ class ParseContext(object):
   In constrast, STATE is stored in the CommandParser and WordParser instances.
   """
 
-  def __init__(self, arena, parse_opts, aliases, oil_grammar, trail=None,
-               one_pass_parse=False):
-    # type: (Arena, OilParseOptions, Dict[str, Any], Grammar, Optional[_BaseTrail], bool) -> None
+  def __init__(self, arena, parse_opts, aliases, oil_grammar):
+    # type: (Arena, OilParseOptions, Dict[str, str], Grammar) -> None
     self.arena = arena
     self.parse_opts = parse_opts
     self.aliases = aliases
@@ -251,18 +256,29 @@ class ParseContext(object):
     # NOTE: The transformer is really a pure function.
     if oil_grammar:
       self.tr = expr_to_ast.Transformer(oil_grammar)
-      names = MakeGrammarNames(oil_grammar)
+      if mylib.PYTHON:
+        names = MakeGrammarNames(oil_grammar)
     else:  # hack for unit tests, which pass None
       self.tr = None
-      names = {}
+      if mylib.PYTHON:  # TODO: Simplify
+        names = {}
+
+    if mylib.PYTHON:
+      self.p_printer = expr_parse.ParseTreePrinter(names)  # print raw nodes
 
     self.parsing_expr = False  # "single-threaded" state
 
     # Completion state lives here since it may span multiple parsers.
-    self.trail = trail or _NullTrail()
-    self.one_pass_parse = one_pass_parse
+    self.trail = _NullTrail()  # type: _BaseTrail
+    self.one_pass_parse = False
 
-    self.p_printer = expr_parse.ParseTreePrinter(names)  # print raw nodes
+  def Init_Trail(self, trail):
+    # type: (_BaseTrail) -> None
+    self.trail = trail
+
+  def Init_OnePassParse(self, b):
+    # type: (bool) -> None
+    self.one_pass_parse = b
 
   def _MakeLexer(self, line_reader):
     # type: (_Reader) -> Lexer
@@ -274,16 +290,14 @@ class ParseContext(object):
     line_lexer = lexer.LineLexer('', self.arena)
     return lexer.Lexer(line_lexer, line_reader)
 
-  def MakeOshParser(self, line_reader, emit_comp_dummy=False,
-                    aliases_in_flight=None):
-    # type: (_Reader, bool, Optional[AliasesInFlight]) -> CommandParser
+  def MakeOshParser(self, line_reader, emit_comp_dummy=False):
+    # type: (_Reader, bool) -> CommandParser
     lx = self._MakeLexer(line_reader)
     if emit_comp_dummy:
       lx.EmitCompDummy()  # A special token before EOF!
 
     w_parser = word_parse.WordParser(self, lx, line_reader)
-    c_parser = cmd_parse.CommandParser(self, w_parser, lx, line_reader,
-                                       aliases_in_flight=aliases_in_flight)
+    c_parser = cmd_parse.CommandParser(self, w_parser, lx, line_reader)
     return c_parser
 
   def MakeWordParserForHereDoc(self, line_reader):
@@ -300,17 +314,17 @@ class ParseContext(object):
     """Used for a[x+1]=foo in the CommandParser."""
     line_reader = reader.StringLineReader(code_str, self.arena)
     lx = self._MakeLexer(line_reader)
-    w_parser = word_parse.WordParser(self, lx, line_reader,
-                                     lex_mode=lex_mode_e.Arith)
-    a_parser = tdop.TdopParser(arith_parse.SPEC, w_parser)
+    w_parser = word_parse.WordParser(self, lx, line_reader)
+    w_parser.Init(lex_mode_e.Arith)  # Special initialization
+    a_parser = tdop.TdopParser(arith_parse.Spec(), w_parser)
     return a_parser
 
   def MakeParserForCommandSub(self, line_reader, lexer, eof_id):
     # type: (_Reader, Lexer, Id_t) -> CommandParser
     """To parse command sub, we want a fresh word parser state."""
     w_parser = word_parse.WordParser(self, lexer, line_reader)
-    c_parser = cmd_parse.CommandParser(self, w_parser, lexer, line_reader,
-                                       eof_id=eof_id)
+    c_parser = cmd_parse.CommandParser(self, w_parser, lexer, line_reader)
+    c_parser.Init_EofId(eof_id)
     return c_parser
 
   def MakeWordParserForPlugin(self, code_str):
@@ -321,7 +335,7 @@ class ParseContext(object):
     return word_parse.WordParser(self, lx, line_reader)
 
   def _ParseOil(self, lexer, start_symbol):
-    # type: (Lexer, int) -> Tuple[PNode, token]
+    # type: (Lexer, int) -> Tuple[PNode, Token]
     """Helper Oil expression parsing."""
     self.parsing_expr = True
     try:
@@ -330,7 +344,7 @@ class ParseContext(object):
       self.parsing_expr = False
 
   def ParseVarDecl(self, kw_token, lexer):
-    # type: (token, Lexer) -> Tuple[command_t, token]
+    # type: (Token, Lexer) -> Tuple[command__VarDecl, Token]
     """e.g. var mylist = [1, 2, 3]"""
 
     # TODO: We do need re-entrancy for var x = @[ (1+2) ] and such
@@ -346,26 +360,27 @@ class ParseContext(object):
     if 0:
       self.p_printer.Print(pnode)
 
-    ast_node = self.tr.VarDecl(pnode)
+    ast_node = self.tr.MakeVarDecl(pnode)
     ast_node.keyword = kw_token  # VarDecl didn't fill this in
     return ast_node, last_token
 
   def ParsePlaceMutation(self, kw_token, lexer):
-    # type: (token, Lexer) -> Tuple[command_t, token]
+    # type: (Token, Lexer) -> Tuple[command__PlaceMutation, Token]
 
     # TODO: Create an ExprParser so it's re-entrant.
     pnode, last_token = self.e_parser.Parse(lexer,
                                             grammar_nt.oil_place_mutation)
     if 0:
       self.p_printer.Print(pnode)
-    ast_node = self.tr.PlaceMutation(pnode)
+    ast_node = self.tr.MakePlaceMutation(pnode)
     ast_node.keyword = kw_token  # VarDecl didn't fill this in
     return ast_node, last_token
 
   def ParseOilArgList(self, lexer, out):
-    # type: (Lexer, arg_list) -> token
+    # type: (Lexer, arg_list) -> Token
     if self.parsing_expr:
-      p_die("TODO: can't be nested")
+      # TODO: get rid of parsing_expr
+      raise AssertionError()
 
     pnode, last_token = self._ParseOil(lexer, grammar_nt.oil_arglist)
 
@@ -376,7 +391,7 @@ class ParseContext(object):
     return last_token
 
   def ParseOilExpr(self, lexer, start_symbol):
-    # type: (Lexer, int) -> Tuple[expr_t, token]
+    # type: (Lexer, int) -> Tuple[expr_t, Token]
     """For Oil expressions that aren't assignments."""
     pnode, last_token = self.e_parser.Parse(lexer, start_symbol)
 
@@ -387,7 +402,7 @@ class ParseContext(object):
     return ast_node, last_token
 
   def ParseOilForExpr(self, lexer, start_symbol):
-    # type: (Lexer, int) -> Tuple[List[name_type], expr_t, token]
+    # type: (Lexer, int) -> Tuple[List[name_type], expr_t, Token]
     """ for (x Int, y Int in foo) """
     pnode, last_token = self.e_parser.Parse(lexer, start_symbol)
 
@@ -398,7 +413,7 @@ class ParseContext(object):
     return lvalue, iterable, last_token
 
   def ParseProc(self, lexer, out):
-    # type: (Lexer, command__Proc) -> token
+    # type: (Lexer, command__Proc) -> Token
     """ proc f(x, y, @args) { """
     pnode, last_token = self.e_parser.Parse(lexer, grammar_nt.oil_proc)
 
@@ -409,7 +424,7 @@ class ParseContext(object):
     return last_token
 
   def ParseFunc(self, lexer, out):
-    # type: (Lexer, command__Func) -> token
+    # type: (Lexer, command__Func) -> Token
     """ func f(x Int, y Int = 0, ...args; z Int = 3, ...named) { """
     pnode, last_token = self.e_parser.Parse(lexer, grammar_nt.oil_func)
 

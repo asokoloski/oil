@@ -4,15 +4,14 @@ expr_parse.py
 from __future__ import print_function
 
 from _devbuild.gen.syntax_asdl import (
-    token, double_quoted, single_quoted, command_sub, sh_array_literal,
-    word__Token, word__Compound, word_part_t,
+    Token, double_quoted, single_quoted, command_sub, sh_array_literal,
+    compound_word, word_part_t, word_e
 )
 from _devbuild.gen.id_kind_asdl import Id, Kind, Id_str
 from _devbuild.gen.types_asdl import lex_mode_e
 
-from core import util
-from core.util import log
-from core.util import p_die
+from core import error
+from core.util import log, p_die
 from frontend import lookup
 from frontend import reader
 from osh import braces
@@ -45,13 +44,13 @@ class ParseTreePrinter(object):
     # - why isn't 'tok' None for PRODUCTIONS?  There is some redundancy to get
     #   rid of.
     if pnode.tok:
-      assert isinstance(pnode.tok, token), pnode.tok
+      assert isinstance(pnode.tok, Token), pnode.tok
       v = pnode.tok.val
       #v = repr(pnode.tok)
     else:
       v = '-'
     self.f.write('%s%d %s %s\n' % (ind, i, self.names[pnode.typ], v))
-    if pnode.children:  # could be None
+    if pnode.children is not None:
       for i, child in enumerate(pnode.children):
         self._Print(child, indent+1, i)
 
@@ -61,7 +60,7 @@ class ParseTreePrinter(object):
 
 
 def _Classify(gr, tok):
-  # type: (Grammar, token) -> int
+  # type: (Grammar, Token) -> int
 
   # We have to match up what ParserGenerator.make_grammar() did when
   # calling make_label() and make_first().  See classify() in
@@ -97,7 +96,7 @@ _OTHER_BALANCE = {
 
 
 def _PushOilTokens(parse_ctx, gr, p, lex):
-  # type: (ParseContext, Grammar, parse.Parser, Lexer) -> token
+  # type: (ParseContext, Grammar, parse.Parser, Lexer) -> Token
   """Push tokens onto pgen2's parser.
 
   Returns the last token so it can be reused/seen by the CommandParser.
@@ -105,7 +104,7 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
   #log('keywords = %s', gr.keywords)
   #log('tokens = %s', gr.tokens)
 
-  last_token = None  # type: Optional[token]
+  last_token = None  # type: Optional[Token]
 
   balance = 0  # to ignore newlines
 
@@ -157,22 +156,24 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         line_reader = reader.DisallowedLineReader(parse_ctx.arena, tok)
         w_parser = parse_ctx.MakeWordParser(lex, line_reader)
         words = []
+        close_tok = None  # type: Optional[Token]
         while True:
           w = w_parser.ReadWord(lex_mode_e.ShCommand)
           if 0:
             log('w = %s', w)
 
-          if isinstance(w, word__Token):
-            word_id = word_.CommandId(w)
-            if word_id == Id.Right_ShArrayLiteral:
+          if w.tag_() == word_e.Token:
+            tok = cast(Token, w)
+            if tok.id == Id.Right_ShArrayLiteral:
+              close_tok = tok
               break
-            elif word_id == Id.Op_Newline:  # internal newlines allowed
+            elif tok.id == Id.Op_Newline:  # internal newlines allowed
               continue
             else:
               # Token
-              p_die('Unexpected token in array literal: %r', w.token.val, word=w)
+              p_die('Unexpected token in array literal: %r', tok.val, word=w)
 
-          assert isinstance(w, word__Compound)  # for MyPy
+          assert isinstance(w, compound_word)  # for MyPy
           words.append(w)
 
         words2 = braces.BraceDetectAll(words)
@@ -181,14 +182,13 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         typ = Id.Expr_CastedDummy
 
         lit_part = sh_array_literal(left_tok, words3)
-        opaque = cast(token, lit_part)  # HACK for expr_to_ast
+        opaque = cast(Token, lit_part)  # HACK for expr_to_ast
         done = p.addtoken(typ, opaque, gr.tokens[typ])
         assert not done  # can't end the expression
 
         # Now push the closing )
-        tok = w.token
-        ilabel = _Classify(gr, tok)
-        done = p.addtoken(tok.id, tok, ilabel)
+        ilabel = _Classify(gr, close_tok)
+        done = p.addtoken(tok.id, close_tok, ilabel)
         assert not done  # can't end the expression
 
         continue
@@ -209,7 +209,7 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         cs_part.spids.append(right_token.span_id)
 
         typ = Id.Expr_CastedDummy
-        opaque = cast(token, cs_part)  # HACK for expr_to_ast
+        opaque = cast(Token, cs_part)  # HACK for expr_to_ast
         done = p.addtoken(typ, opaque, gr.tokens[typ])
         assert not done  # can't end the expression
 
@@ -230,7 +230,7 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         expr_dq_part = double_quoted(left_token, parts)
 
         typ = Id.Expr_CastedDummy
-        opaque = cast(token, expr_dq_part)  # HACK for expr_to_ast
+        opaque = cast(Token, expr_dq_part)  # HACK for expr_to_ast
         done = p.addtoken(typ, opaque, gr.tokens[typ])
         assert not done  # can't end the expression
 
@@ -241,11 +241,11 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         line_reader = reader.DisallowedLineReader(parse_ctx.arena, tok)
         w_parser = parse_ctx.MakeWordParser(lex, line_reader)
 
-        part, last_token = w_parser.ReadBracedBracedVarSub(left_token)
+        part, last_token = w_parser.ReadBracedVarSub(left_token)
 
         # It's casted word_part__BracedVarSub -> dummy -> expr__BracedVarSub!
         typ = Id.Expr_CastedDummy
-        opaque = cast(token, part)  # HACK for expr_to_ast
+        opaque = cast(Token, part)  # HACK for expr_to_ast
         done = p.addtoken(typ, opaque, gr.tokens[typ])
         assert not done  # can't end the expression
 
@@ -262,14 +262,14 @@ def _PushOilTokens(parse_ctx, gr, p, lex):
         line_reader = reader.DisallowedLineReader(parse_ctx.arena, tok)
         w_parser = parse_ctx.MakeWordParser(lex, line_reader)
 
-        tokens = []  # type: List[token]
+        tokens = []  # type: List[Token]
         no_backslashes = (left_token.val == "'")
         last_token = w_parser.ReadSingleQuoted(sq_mode, left_token, tokens,
                                                no_backslashes)
         sq_part = single_quoted(left_token, tokens)
 
         typ = Id.Expr_CastedDummy
-        opaque = cast(token, sq_part)  # HACK for expr_to_ast
+        opaque = cast(Token, sq_part)  # HACK for expr_to_ast
         done = p.addtoken(typ, opaque, gr.tokens[typ])
         assert not done  # can't end the expression
         continue
@@ -290,7 +290,7 @@ class ExprParser(object):
     self.push_parser = parse.Parser(gr)
 
   def Parse(self, lexer, start_symbol):
-    # type: (Lexer, int) -> Tuple[PNode, token]
+    # type: (Lexer, int) -> Tuple[PNode, Token]
 
     # Reuse the parser
     self.push_parser.setup(start_symbol)
@@ -307,7 +307,7 @@ class ExprParser(object):
       # ParseError has a "too much input" case but I haven't been able to
       # tickle it.  Mabye it's because of the Eof tokens?
 
-      #raise util.ParseError('Syntax error in expression (%r)', e, token=e.tok)
-      raise util.ParseError('Syntax error in expression', token=e.tok)
+      #raise error.Parse('Syntax error in expression (%r)', e, token=e.tok)
+      raise error.Parse('Syntax error in expression', token=e.tok)
 
     return self.push_parser.rootnode, last_token

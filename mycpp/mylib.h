@@ -5,7 +5,6 @@
 
 #include <assert.h>
 #include <ctype.h>  // isalpha(), isdigit()
-#include <stddef.h>  // size_t
 #include <stdlib.h>  // malloc
 #include <string.h>  // strlen
 // https://stackoverflow.com/questions/3882346/forward-declare-file
@@ -14,6 +13,12 @@
 #include <initializer_list>
 #include <climits>  // CHAR_BIT
 #include <cstdint>
+
+#ifdef DUMB_ALLOC
+#include "dumb_alloc.h"
+#define malloc dumb_malloc
+#define free dumb_free
+#endif
 
 // To reduce code size
 
@@ -25,13 +30,15 @@ class Str;
 template <class T> class List;
 template <class K, class V> class Dict;
 
+extern Str* kEmptyString;
+
 // for hand-written code
 void log(const char* fmt, ...);
 
-// for generated code
-void log(Str* fmt, ...);
-
 void print(Str* s);
+
+// log() generates code that writes this
+void println_stderr(Str* s);
 
 //
 // TODO: Fill exceptions in
@@ -101,6 +108,9 @@ class Str {
 
   // Get a string with one character
   Str* index(int i) {
+    if (i < 0) {
+      i = len_ + i;
+    }
     char* buf = static_cast<char*>(malloc(2));
     buf[0] = data_[i];
     buf[1] = '\0';
@@ -109,6 +119,9 @@ class Str {
 
   // s[begin:]
   Str* slice(int begin) {
+    if (begin == 0) {
+      return this;  // s[i:] where i == 0 is common in here docs
+    }
     if (begin < 0) {
       begin = len_ + begin;
     }
@@ -131,19 +144,51 @@ class Str {
 
   // TODO: implement these.  With switch statement.
   Str* strip() {
+    assert(0);
     return nullptr;
   }
   Str* rstrip() {
-    return nullptr;
+    if (len_ == 0) {
+      return this;
+    }
+    // index of the last character that's not a space
+    int last = len_ - 1;
+    int i = last;
+    bool done = false;
+    while (i > 0 && !done) {
+      switch (data_[i]) {
+        case ' ':
+        case '\t':
+        case '\r':
+        case '\n':
+          i--;
+        default:
+          done = true;
+          break;
+      }
+    }
+    if (i == last) {  // nothing stripped
+      return this;
+    }
+    int new_len = i+1;
+    char* buf = static_cast<char*>(malloc(new_len + 1));
+    memcpy(buf, data_, new_len);
+    buf[new_len] = '\0';
+    return new Str(buf, new_len);
   }
 
   bool startswith(Str* s) {
-    assert(false);
-    return true;
+    if (s->len_ >= len_) {
+      return false;
+    }
+    return memcmp(data_, s->data_, s->len_) == 0;
   }
   bool endswith(Str* s) {
-    assert(false);
-    return true;
+    if (s->len_ >= len_) {
+      return false;
+    }
+    const char* start = data_ + len_ - s->len_;
+    return memcmp(start, s->data_, s->len_) == 0;
   }
   bool isdigit() {
     if (len_ == 0) {
@@ -167,6 +212,18 @@ class Str {
     }
     return true;
   }
+  // e.g. for osh/braces.py
+  bool isupper() {
+    if (len_ == 0) {
+      return false;  // special case
+    }
+    for (int i = 0; i < len_; ++i) {
+      if (! ::isupper(data_[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   List<Str*>* splitlines(bool keep) {
     assert(keep == true);
@@ -177,7 +234,7 @@ class Str {
   Str* join(List<Str*>* items);
 
   const char* data_;
-  size_t len_;
+  int len_;
 
   DISALLOW_COPY_AND_ASSIGN(Str)
 };
@@ -202,11 +259,14 @@ class StrIter {
   DISALLOW_COPY_AND_ASSIGN(StrIter)
 };
 
-// I don't think we can use vector<> directly?  The method names are different.
+// TODO: Rewrite without vector<>, so we don't depend on libstdc++.
 template <class T>
 class List {
  public:
   List() : v_() {
+    // Note: this seems to INCREASE the number of 'new' calls.  I guess because
+    // many 'spids' lists aren't used?
+    // v_.reserve(64);
   }
 
   List(std::initializer_list<T> init) : v_() {
@@ -225,12 +285,16 @@ class List {
 
   // L[begin:]
   List* slice(int begin) {
+    if (begin == 0) {
+      return this;
+    }
     if (begin < 0) {
       begin = v_.size() + begin;
     }
 
     List* result = new List();
-    for (int i = begin; i < v_.size(); i++) {
+    int len = v_.size();
+    for (int i = begin; i < len; i++) {
       result->v_.push_back(v_[i]);
     }
     return result;
@@ -253,7 +317,25 @@ class List {
   }
 
   void append(T item) {
+#ifdef SIZE_LOG
+    // we can post process this format to find large lists
+    // except when they're constants, but that's OK?
+    printf("%p %zu\n", this, v_.size());
+#endif
+
     v_.push_back(item);
+  }
+
+  void extend(List<T>* items) {
+    // Note: C++ idioms would be v_.insert() or std::copy, but we're keeping it
+    // simple.
+    //
+    // We could optimize this for the small cases Oil has?  I doubt it's a
+    // bottleneck anywhere.
+    int len = items->v_.size();
+    for (int i = 0; i < len; ++i) {
+      v_.push_back(items->v_[i]);
+    }
   }
 
   // Reconsider?
@@ -263,6 +345,32 @@ class List {
     T result = v_.back();
     v_.pop_back();
     return result;
+  }
+
+  // Used in osh/word_parse.py to remove from front
+  // TODO: Don't accept arbitrary index?
+  T pop(int index) {
+    if (v_.size() == 0) {
+      // TODO: Handle this better?
+      assert(0);
+    }
+
+    T result = v_.at(index);
+    v_.erase(v_.begin() + index);
+    return result;
+
+    /*
+    Implementation without std::vector
+    assert(index == 0);
+    for (int i = 1; i < v_.size(); ++i) {
+      v_[i-1] = v_[i];
+    }
+    v_.pop_back();
+    */
+  }
+
+  void clear() {
+    v_.clear();
   }
 
   // STUB: For LHS assignment.
@@ -284,7 +392,8 @@ class ListIter {
     i_++;
   }
   bool Done() {
-    return i_ >= L_->v_.size();
+    // "unsigned size_t was a mistake"
+    return i_ >= static_cast<int>(L_->v_.size());
   }
   T Value() {
     return L_->v_[i_];
@@ -318,6 +427,10 @@ class Dict {
   // STUB
   V& operator[](K key) {
     return values_[0];
+  }
+
+  void remove(K key) {
+    assert(0);
   }
 
  private:
@@ -378,8 +491,12 @@ inline int len(Str* s) {
   return s->len_;
 }
 
-template <class T> int len(List<T>* L) {
+template <typename  T> int len(List<T>* L) {
   return L->v_.size();
+}
+
+template <typename  K, typename  V> int len(Dict<K, V>* d) {
+  assert(0);
 }
 
 //
@@ -417,6 +534,11 @@ inline Str* chr(int i) {
   return new Str(buf, 1);
 }
 
+inline int ord(Str* s) {
+  assert(s->len_ == 1);
+  return s->data_[0];
+}
+
 // https://stackoverflow.com/questions/3919995/determining-sprintf-buffer-size-whats-the-standard/11092994#11092994
 // Note: Python 2.7's intobject.c has an erroneous +6
 
@@ -430,6 +552,9 @@ inline Str* str(int i) {
   return new Str(buf, len);
 }
 
+// Display a quoted representation of a string.  word_.Pretty() uses it.
+Str* repr(Str* s);
+
 // TODO: There should be one str() and one repr() for every sum type, that
 // dispatches on tag?  Or just repr()?
 
@@ -439,9 +564,11 @@ inline Str* str(int i) {
 
 bool _str_to_int(Str* s, int* result);  // for testing only
 int str_to_int(Str* s);
+int str_to_int(Str* s, int base);
 
 // e.g. ('a' in 'abc')
 inline bool str_contains(Str* haystack, Str* needle) {
+  // cstring-TODO: this not rely on NUL termination
   const char* p = strstr(haystack->data_, needle->data_);
   return p != NULL;
 }
@@ -457,10 +584,10 @@ inline bool list_contains(List<Str*>* haystack, Str* needle) {
   return false;
 }
 
-// ints and floats
+// ints, floats, enums like Kind
 // e.g. 1 in [1, 2, 3]
 template <typename T>
-inline bool list_contains(List<T>* haystack, int needle) {
+inline bool list_contains(List<T>* haystack, T needle) {
   int n = haystack->v_.size();
   for (int i = 0; i < n; ++i) {
     if (haystack->index(i) == needle) {
@@ -503,6 +630,39 @@ class BufLineReader : public LineReader {
   DISALLOW_COPY_AND_ASSIGN(BufLineReader)
 };
 
+// Wrap a FILE*
+class CFileLineReader : public LineReader {
+ public:
+  explicit CFileLineReader(FILE* f) : f_(f) {
+  }
+  virtual Str* readline();
+
+ private:
+  FILE* f_;
+
+  DISALLOW_COPY_AND_ASSIGN(CFileLineReader)
+};
+
+extern LineReader* gStdin;
+
+inline LineReader* Stdin() {
+  if (gStdin == nullptr) {
+    gStdin = new CFileLineReader(stdin);
+  }
+  return gStdin;
+}
+
+inline LineReader* open(Str* path) {
+  // cstring-TODO: don't use data_ directly
+  FILE* f = fopen(path->data_, "r");
+
+  // TODO: Better error checking.  IOError?
+  if (!f) {
+    throw new AssertionError("file not found");
+  }
+  return new CFileLineReader(f);
+}
+
 class Writer {
  public:
   virtual void write(Str* s) = 0;
@@ -518,7 +678,15 @@ class BufWriter : public Writer {
     return false;
   }
   // For cStringIO API
-  Str* getvalue() { return new Str(data_, len_); }
+  Str* getvalue() {
+    if (data_) {
+      return new Str(data_, len_);
+    } else {
+      // log('') translates to this
+      // Strings are immutable so we can do this.
+      return kEmptyString;
+    }
+  }
 
   // Methods to compile printf format strings to
 
@@ -545,7 +713,7 @@ class BufWriter : public Writer {
  private:
   // Just like a string, except it's mutable
   char* data_;
-  size_t len_;
+  int len_;
 };
 
 // Wrap a FILE*
@@ -571,6 +739,15 @@ inline Writer* Stdout() {
   return gStdout;
 }
 
+extern Writer* gStderr;
+
+inline Writer* Stderr() {
+  if (gStderr == nullptr) {
+    gStderr = new CFileWriter(stderr);
+  }
+  return gStderr;
+}
+
 }  // namespace mylib
 
 //
@@ -578,5 +755,10 @@ inline Writer* Stdout() {
 //
 
 extern mylib::BufWriter gBuf;
+
+// mycpp doesn't understand dynamic format strings yet
+inline Str* dynamic_fmt_dummy() {
+  return new Str("dynamic_fmt_dummy");
+}
 
 #endif  // MYLIB_H

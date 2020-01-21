@@ -1,38 +1,16 @@
 #!/usr/bin/env bash
 #
 # Usage:
-#   ./run.sh <function name>
+#   build/doc.sh <function name>
 
 set -o nounset
 set -o pipefail
 set -o errexit
 
-# http://oilshell.org/$VERSION/
+# https://oilshell.org/release/$VERSION/
 #  doc/
-#    INSTALL.txt -- for people who want to try it
-#    osh-quick-ref.html -- A single page
-#    osh-manual.html    -- more stuff
-
-# Do we want:
-# - spec/unit/gold/wild test results?
-# - benchmarks?
-
-# maybe:
-# $VERSION/
-#   doc/
-#   test/
-#   benchmarks/
-#
-# Just like the repo layout.
-
-# Another idea:
-#
-# http://oilshell.org/release/
-#   $VERSION/
-#     oil-0.0.0.tar.gz   # This should probably go on a different host
-#     doc/
-#     test/
-#     benchmarks/
+#    index.html
+#    INSTALL.html
 
 readonly OIL_VERSION=$(head -n 1 oil-version.txt)
 export OIL_VERSION  # for quick_ref.py
@@ -42,7 +20,7 @@ log() {
 }
 
 #
-# Deps (similar to devtools/cmark.sh and build/codegen.sh)
+# Deps (similar to doctools/cmark.sh and build/codegen.sh)
 #
 
 readonly MANDOC_DIR='_deps/mdocml-1.14.1'
@@ -76,148 +54,140 @@ _build-timestamp() {
 # - in deployment script
 
 # Run with environment variable
-_quick-ref() {
-  build/quick_ref.py "$@"
-}
-
-x-quick-ref() {
-  local prog=$1
-  local out_dir=$2
-
-  local html_out=$out_dir/doc/$prog-quick-ref.html
-  local text_out_dir=_devbuild/$prog-quick-ref
-  local py_out=_devbuild/gen/${prog}_help.py
-
-  mkdir -p $out_dir/doc $text_out_dir
-
-  {
-    cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-    <style>
-      a:link {
-        text-decoration: none;
-      }
-      a:hover {
-        text-decoration: underline;
-      }
-      body {
-        margin: 0 auto;
-        width: 40em;
-      }
-      /* different color because they're links but not topics */
-      .level1 {
-        /* color: green; */
-        color: black;
-      }
-      .level2 {
-        color: #555;
-      }
-      h1,h2,h3,h4 {
-      /* color: darkcyan; */
-      }
-      #home-link {
-        text-align: right;
-      }
-    </style>
-  </head>
-  <body>
-    <p id="home-link">
-      <a href="/">oilshell.org</a>
-    </p>
-    <p style="color: darkred; font-size: x-large;">
-      NOTE: This document is a work in progress!
-    </p>
-EOF
-
-    _quick-ref toc doc/${prog}-quick-ref-toc.txt
-
-    # Also generate the _devbuild/osh-quick-ref/ dir
-    _quick-ref pages doc/${prog}-quick-ref-pages.txt $text_out_dir $py_out
-
-    _build-timestamp
-    cat <<EOF
-  </body>
-</html>
-EOF
-  } > $html_out
-  log "Wrote $html_out"
-}
-
-osh-quick-ref() {
-  local out_dir=${1:-_release/VERSION}
-  x-quick-ref osh $out_dir
+_make-help() {
+  PYTHONPATH=. doctools/make_help.py "$@"
 }
 
 cmark() {
   # h2 and h3 are shown in TOC.  The blog uses "legacy" h3 and h4.
-  devtools/cmark.py --toc-tag h2 --toc-tag h3 --pretty-href
+  PYTHONPATH=. doctools/cmark.py --toc-tag h2 --toc-tag h3 --toc-pretty-href "$@"
 }
 
-markdown2html() {
-  local src=$1
-  local out=$2
-  local more_css_link=${3:-}
+readonly MARKDOWN_DOCS=(
+  # Help index has its own rendering
 
-  { cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-    $more_css_link
-  </head>
-  <body>
-    <p id="home-link">
-      <a href="/releases.html">all releases</a> |
-      <a href="/">oilshell.org</a>
-    </p>
+  # polished
+  osh-manual known-differences
+  errors
+  errexit
+  json
+
+  doc-toolchain
+
+  # needs polish
+  # Note: docs about the Oil language are prefixed 'oil-'.
+  # data-model and command-vs-expression-mode span both OSH and Oil.
+
+  index
+  what-is-oil
+  oil-overview
+  oil-options
+  oil-keywords
+  oil-builtins
+  command-vs-expression-mode
+  oil-expressions
+  oil-word-language
+  oil-special-vars
+  oil-proc-func-block
+  eggex
+  unicode
+
+  data-model
+  architecture-notes
+)
+
+readonly TIMESTAMP=$(date)
+
+split-and-render() {
+  local src=${1:-doc/known-differences.md}
+
+  local name=$(basename $src .md)
+  local out=${2:-_release/VERSION/doc/$name.html}
+
+  local prefix=_tmp/doc/$name
+
+  # Also add could add css_files.  The one in the file takes precedence always?
+
+  # css_files: a space-separated list
+  # all_docs_url: so we link from doc/foo.html -> doc/
+
+  doctools/split_doc.py \
+    -v build_timestamp="$TIMESTAMP" \
+    -v oil_version="$OIL_VERSION" \
+    -v css_files='../web/base.css ../web/manual.css ../web/toc.css ../web/language.css ../web/code.css' \
+    -v all_docs_url='.' \
+    -v repo_url="$src" \
+    $src $prefix
+
+  #ls -l _tmp/doc
+  #head _tmp/doc/*
+  #return
+
+  cmark ${prefix}_meta.json ${prefix}_content.md > $out
+  log "Wrote $out"
+}
+
+# Special case for README
+# Do NOT split because we don't want front matter in the markdown source.
+render-only() {
+  local src=${1:-README.md}
+  local css_files=${2:-'../web/manual.css ../web/toc.css'}
+  local title=${3:-'Oil Source Code'}
+
+  local name
+  case $src in 
+    *.md)
+      name=$(basename $src .md)
+      ;;
+    *.txt)
+      name=$(basename $src .txt)
+      ;;
+    *)
+      name=$(basename $src)
+      ;;
+  esac
+
+  local prefix=_tmp/doc/$name
+  local out=_release/VERSION/doc/$name.html
+
+  local meta=${prefix}_meta.json 
+  cat >$meta <<EOF
+{ "title": "$title",
+  "repo_url": "$src",
+  "css_files": "$css_files",
+  "all_docs_url": ".",
+
+  "build_timestamp": "$TIMESTAMP",
+  "oil_version": "$OIL_VERSION"
+}
 EOF
-  
-    cmark < $src
 
-    _build-timestamp
-    cat <<EOF
-  </body>
-</html>
-EOF
-  } > $out
+  cmark $meta $src > $out
+  log "Wrote $out"
 }
 
-release-index() {
-  local out=${1:-_tmp/release-index.html}
-  # NOTE: We're at /release/0.6.pre10/index.html, and then there is a
-  # web/release-index.css file in each release tree.
+special() {
+  render-only 'README.md' '../web/base.css ../web/manual.css ../web/toc.css' 'Oil Source Code'
+  render-only 'INSTALL.txt' '../web/base.css ../web/install.css' 'Installing Oil'
 
-  # Not monospace
-  local css_link='<link rel="stylesheet" type="text/css" href="web/release-index.css" />'
-  markdown2html doc/release-index.md $out "$css_link" ''
+  #
+
+  split-and-render doc/release-index.md _tmp/release-index.html
 }
 
-install() {
-  local root_dir=${1:-_release/VERSION}
-  local css_link='<link rel="stylesheet" type="text/css" href="../web/install.css" />'
-  markdown2html INSTALL.txt $root_dir/doc/INSTALL.html "$css_link"
-}
+all-markdown() {
+  mkdir -p _tmp/doc
 
-manual() {
-  local root_dir=${1:-_release/VERSION}
-  local release_date=${2:-}
+  # TODO: We can set repo_url here!  Then we don't need it for most docs.
+  # split_doc.py can return {} if the doc doesn't start with ---
 
-  local css_link='
-    <link rel="stylesheet" type="text/css" href="../web/manual.css" />
-    <link rel="stylesheet" type="text/css" href="../web/toc.css" />
-  '
-
-  # TODO: cmark.py could replace <span class="date"></span> with -v date=?
-  for d in \
-    osh-manual oil-manual known-differences eggex oil-expressions; do
-
-    markdown2html doc/$d.md $root_dir/doc/$d.html "$css_link" ''
+  #for d in doc/index.md doc/known-differences.md doc/*-manual.md \
+  #  doc/eggex.md doc/oil-options.md doc/oil-func-proc-block.md; do
+  for d in "${MARKDOWN_DOCS[@]}"; do
+    split-and-render doc/$d.md
   done
 
-  markdown2html README.md $root_dir/doc/README.html "$css_link" ''
-
-  ls -l $root_dir/doc
+  special
 }
 
 # TODO: This could use some CSS.
@@ -235,14 +205,14 @@ _sed-ext() {
 update-src-versions() {
   _sed-ext \
     "s/[0-9]+\.[0-9]+\.[a-z0-9]+/$OIL_VERSION/g" \
-    doc/release-index.md doc/osh-manual.md doc/oil-manual.md
+    doc/release-index.md 
 
   _sed-ext \
     "s/oil-[0-9]+\.[0-9]+\.[a-z0-9]+/oil-$OIL_VERSION/g" INSTALL.txt
 
   _sed-ext \
     "s;/release/[0-9]+\.[0-9]+\.[a-z0-9]+/;/release/$OIL_VERSION/;g" \
-    INSTALL.txt doc/osh-quick-ref-toc.txt doc/osh.1
+    doc/osh.1
 }
 
 oil-grammar() {
@@ -255,7 +225,7 @@ important-source-code() {
 
   for rel_path in \
     frontend/lex.py \
-    _devbuild/gen/osh-lex.re2c.h \
+    _devbuild/tmp/osh-lex.re2c.h \
     _devbuild/gen/osh-lex.h \
     _devbuild/gen/id.h \
     frontend/syntax.asdl \
@@ -263,6 +233,81 @@ important-source-code() {
   mkdir -p $dest/$(dirname $rel_path)
     cp --no-target-directory -v $rel_path $dest/$rel_path
   done
+}
+
+#
+# Test Tools
+#
+
+split-doc-demo() {
+  cat > _tmp/testdoc.md <<EOF
+---
+title: foo
+---
+
+Title
+=====
+
+hello
+
+EOF
+
+  doctools/split_doc.py _tmp/testdoc.md _tmp/testdoc
+
+  head _tmp/testdoc*
+}
+
+#
+# Help is both markdown and text
+#
+
+readonly TEXT_DIR=_devbuild/help
+readonly HTML_DIR=_release/VERSION
+readonly CODE_DIR=_devbuild/gen
+
+# NOTE: Should eventually take .html instead of .md
+help-index-cards() {
+  local py_out=$CODE_DIR/help_index.py
+  _make-help cards-for-index $TEXT_DIR $py_out < $HTML_DIR/doc/help-index.html
+}
+
+help-cards() {
+  ### Do all cards at once
+
+  # Pass the HTML.  This makes it easier to parse headings
+  #doctools/make_help.py cards \
+  #  $HTML_DIR/doc/help.html $HTML_DIR/doc/help-index.html $TEXT_DIR
+
+  local py_out=$CODE_DIR/help_.py
+
+  # For now, the pass help markdown
+  _make-help cards \
+    doc/help.md $HTML_DIR/doc/help-index.html $TEXT_DIR $py_out
+}
+
+minimal-help() {
+  echo 'Skipping help'
+}
+
+all-help() {
+  ### Build HTML and text help, which depends on libcmark.so
+
+  rm -v -f $TEXT_DIR/*
+  mkdir -p _tmp/doc $TEXT_DIR $HTML_DIR/doc
+
+  split-and-render doc/help-index.md
+  split-and-render doc/help.md
+
+  help-index-cards
+  help-cards $HTML_DIR $TEXT_DIR
+
+  # Better sorting
+  LANG=C ls -l $TEXT_DIR
+}
+
+run-for-release() {
+  all-markdown
+  all-help
 }
 
 "$@"

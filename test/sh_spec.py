@@ -61,6 +61,8 @@ import subprocess
 import sys
 import time
 
+from doctools import html_head
+
 
 # Magic strings for other variants of OSH.
 
@@ -841,13 +843,12 @@ class HtmlOutput(ColorOutput):
         self.spec_name, line_num, cgi.escape(desc))
 
   def BeginCases(self, test_file):
+    css_urls = [ '../../web/base.css', '../../web/spec-tests.css' ]
+    title = '%s: spec test case results' % self.spec_name
+    html_head.Write(self.f, title, css_urls=css_urls)
+
     self.f.write('''\
-<!DOCTYPE html>
-<html>
-  <head>
-    <link href="../../web/spec-tests.css" rel="stylesheet">
-  </head>
-  <body>
+  <body class="width60">
     <p id="home-link">
       <a href=".">spec test index</a>
       /
@@ -1035,9 +1036,7 @@ def MakeTestEnv(opts):
   env = {
     'TMP': os.path.normpath(opts.tmp_env),  # no .. or .
     'PATH': opts.path_env,
-    # Copied from my own environment.  For now, we want to test bash and other
-    # shells in utf-8 mode.
-    'LANG': 'en_US.UTF-8',
+    'LANG': opts.lang_env,
   }
   for p in opts.env_pair:
     name, value = p.split('=', 1)
@@ -1083,6 +1082,14 @@ def Options():
   p.add_option(
       '--tmp-env', dest='tmp_env', default='',
       help="A temporary directory that the tests can use.")
+
+  # Notes:
+  # - utf-8 is the Ubuntu default
+  # - this flag has limited usefulness.  It may be better to simply export LANG=
+  #   in this test case itself.
+  p.add_option(
+      '--lang-env', dest='lang_env', default='en_US.UTF-8',
+      help="The LANG= setting, which affects various libc functions.")
   p.add_option(
       '--env-pair', dest='env_pair', default=[], action='append',
       help='A key=value pair to add to the environment')

@@ -181,6 +181,42 @@ yes
 no
 ## END
 
+#### Capture is acceptable as a group
+shopt -s oil:all
+var pat = /<%start s | d d>/
+echo $pat
+## STDOUT:
+(^[[:space:]]|[[:digit:]][[:digit:]])
+## END
+
+#### Named Capture Decays Without Name
+shopt -s oil:all
+var pat = /<d+ : month>/
+echo $pat
+
+if ('123' ~ pat) {
+  echo yes
+}
+
+## STDOUT:
+([[:digit:]]+)
+yes
+## END
+
+#### Named Capture With ~ Assigns Variable
+shopt -s oil:all
+var pat = /<d+ : month>/
+echo $pat
+
+if ('123' ~ pat) {
+  echo yes
+  = month
+}
+## STDOUT:
+([[:digit:]]+)
+yes
+TODO MONTH
+## END
 
 #### literal ''
 shopt -s oil:all
@@ -232,6 +268,19 @@ yes
 no
 ## END
 
+#### splice with capital letters
+shopt -s oil:all
+var D = /d+/;
+var ip = / D '.' D '.' D '.' D /
+echo $ip
+if ('0.0.0.0' ~ ip) { echo yes } else { echo no }
+if ('0.0.0' ~ ip) { echo yes } else { echo no }
+## STDOUT:
+[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+
+yes
+no
+## END
+
 #### Matching escaped tab character
 shopt -s oil:all
 
@@ -239,8 +288,8 @@ shopt -s oil:all
 var lines=@($'aa\tbb' $'cc\tdd')
 
 var pat = / ('a' [\t] 'b') /
-echo pat=$pat
-echo @lines | egrep $pat 
+write pat=$pat
+write @lines | egrep $pat 
 
 ## stdout-json: "pat=(a[\t]b)\naa\tbb\n"
 
@@ -311,8 +360,8 @@ shopt -s oil:all
 var lines=@($'aa\tbb' $'cc\tdd')
 
 var pat = / ('a' [\t] 'b') /
-echo pat=$pat
-echo @lines | egrep $pat 
+write pat=$pat
+write @lines | egrep $pat 
 
 ## stdout-json: "pat=(a[\t]b)\naa\tbb\n"
 
@@ -332,8 +381,8 @@ var lines=@(
 # []abc] works.  But [abc\]] does NOT work.  Stupid rule!
 
 var pat = / [ ']' \\ \' \" ] /
-echo pat=$pat
-echo @lines | egrep $pat 
+write pat=$pat
+write @lines | egrep $pat 
 
 ## STDOUT:
 pat=[]\\'"]
@@ -348,8 +397,8 @@ shopt -s oil:all
 
 var literal = '-'
 var pat = / [ 'a' $literal 'b' ${literal} "-" ] /
-echo pat=$pat
-echo 'c-d' 'ab' 'cd' | grep $pat
+write pat=$pat
+write 'c-d' 'ab' 'cd' | grep $pat
 ## STDOUT:
 pat=[a\-b\-\-]
 c-d
@@ -427,9 +476,9 @@ shopt -s oil:all
 
 var pat = null
 
-setvar pat = / [ s 'z' ] /
+setvar pat = / [ space 'z' ] /
 echo $pat
-#setvar pat = / [ ~s 'z' ] /
+#setvar pat = / [ ~space 'z' ] /
 #echo $pat
 
 # PROBLEM: can't negate individual POSIX classes.  They would have to be a Perl
@@ -447,11 +496,74 @@ echo $pat
 [[:digit:]z]
 ## END
 
-#### Individual Perl and POSIX Classes In Literals Can't Be Negated
-var pat = null
+#### [~d] can't be negated because it's a literal character
 setvar pat = / [ ~d 'z' ] /
 echo $pat
+## status: 2
+## stdout-json: ""
+
+#### [~digit] can't be negated in POSIX ERE (but yes in Perl)
+var pat = null
 setvar pat = / [ ~digit 'z' ] /
 echo $pat
 ## status: 1
 ## stdout-json: ""
+
+#### Long Python Example
+
+# https://docs.python.org/3/reference/lexical_analysis.html#integer-literals
+
+# integer      ::=  decinteger | bininteger | octinteger | hexinteger
+# decinteger   ::=  nonzerodigit (["_"] digit)* | "0"+ (["_"] "0")*
+# bininteger   ::=  "0" ("b" | "B") (["_"] bindigit)+
+# octinteger   ::=  "0" ("o" | "O") (["_"] octdigit)+
+# hexinteger   ::=  "0" ("x" | "X") (["_"] hexdigit)+
+# nonzerodigit ::=  "1"..."9"
+# digit        ::=  "0"..."9"
+# bindigit     ::=  "0" | "1"
+# octdigit     ::=  "0"..."7"
+# hexdigit     ::=  digit | "a"..."f" | "A"..."F"
+
+shopt -s oil:all
+
+DecDigit = / [0-9] /
+BinDigit = / [0-1] /
+OctDigit = / [0-7] /
+HexDigit = / [0-9 a-f A-F] /  # note: not splicing Digit into character class
+
+DecInt   = / [1-9] ('_'? DecDigit)* | '0'+ ('_'? '0')* /
+BinInt   = / '0' [b B] ('_'? BinDigit)+ /
+OctInt   = / '0' [o O] ('_'? OctDigit)+ /
+HexInt   = / '0' [x X] ('_'? HexDigit)+ /
+
+Integer  = / %start (DecInt | BinInt | OctInt | HexInt) %end /
+
+#echo $Integer
+
+if (    '123'  ~ Integer) { echo 'Y' }
+if (    'zzz' !~ Integer) { echo 'N' }
+
+if ('123_000'  ~ Integer) { echo 'Y decimal' }
+if ('000_123' !~ Integer) { echo 'N decimal' }
+
+if (  '0b100'  ~ Integer) { echo 'Y binary' }
+if (  '0b102' !~ Integer) { echo 'N binary' }
+
+if (  '0o755'  ~ Integer) { echo 'Y octal' }
+if (  '0o778' !~ Integer) { echo 'N octal' }
+
+if (   '0xFF'  ~ Integer) { echo 'Y hex' }
+if (   '0xFG' !~ Integer) { echo 'N hex' }
+
+## STDOUT:
+Y
+N
+Y decimal
+N decimal
+Y binary
+N binary
+Y octal
+N octal
+Y hex
+N hex
+## END

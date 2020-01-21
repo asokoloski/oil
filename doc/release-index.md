@@ -1,13 +1,19 @@
-<!-- NOTE: This file is at /release/$VERSION/index.html -->
+---
+css_files: web/base.css web/release-index.css
+all_docs_url: -
+version_url: -
+---
 
-Oil 0.7.pre5
+Oil 0.7.0
 ============
+
+<!-- NOTE: This file is published to /release/$VERSION/index.html -->
 
 <span class="date">
 <!-- REPLACE_WITH_DATE -->
 </span>
 
-This is the home page for version 0.7.pre5 of Oil, a Unix shell.  To use it,
+This is the home page for version 0.7.0 of Oil, a Unix shell.  To use it,
 
 1. Download a source tarball.
 2. Build and install it, as described in [INSTALL][].
@@ -24,6 +30,8 @@ Test results, metrics, and benchmarks are shown below.
 
 <!-- REPLACE_WITH_DOWNLOAD_LINKS -->
 
+Note: `oil-native` is a **preview** release, not a working shell.
+
 ## What's New
 
 - Details are in the [raw git change log](changelog.html).  Not all changes
@@ -33,31 +41,30 @@ Test results, metrics, and benchmarks are shown below.
 
 ## Documentation
 
-- [INSTALL][]. How do I install Oil?  This text file is also in the tarball.
-- [OSH User Manual](doc/osh-manual.html). How do I use it?
-  - [Known Differences](doc/known-differences.html) is trivia for advanced
-    users.  It lists differences between Oil and other shells.
-  - [OSH Quick Reference](doc/osh-quick-ref.html), with examples (incomplete).
-    This document underlies the `help` builtin, and gives a rough overview of
-    what features OSH implements.
-- Oil
-  - [Egg Expressions](doc/eggex.html).  Oil has a new regex syntax called "egg
-    expressions", abbreviated *eggexes*.
-- [README.md](doc/README.html).  If you want to modify Oil, start here.  We
-  welcome contributions!
+Oil has three major sources of docs:
+
+- The [Doc Overview](doc/) links to all other docs, including the Manual and
+  Oil Language Reference.  It's work in progress.  Up-to-date docs include:
+  - [INSTALL][]
+  - [OSH User Manual](doc/osh-manual.html)
+  - [Known Differences Between OSH and Other
+    Shells](doc/known-differences.html)
+  - [Egg Expressions (Oil Regexes)](doc/eggex.html)
+  - [JSON Support](doc/json.html)
 - [Github Wiki for oilshell/oil](https://github.com/oilshell/oil/wiki)
   - The [Oil Deployments](https://github.com/oilshell/oil/wiki/Oil-Deployments)
     wiki page has other ways of getting Oil.  These versions may not be
     up-to-date.
 
-
 ## Metrics
 
-- Lines of source, counted in differented ways:
+- Lines of source, counted in different ways:
   - [osh-cloc](metrics.wwz/line-counts/osh-cloc.txt).  OSH and common
     libraries, as measured by the [cloc][] tool.
   - [src](metrics.wwz/line-counts/src.txt).  The whole Oil repo organized by
     type of source file.
+  - [oil-cpp](metrics.wwz/line-counts/oil-cpp.txt).  The C++ code in the
+    `oil-native` tarball.
   - [OPy](metrics.wwz/line-counts/opy.txt).  How much code is in the OPy
     toolchain?
 - Lines of dependencies:
@@ -73,19 +80,23 @@ Test results, metrics, and benchmarks are shown below.
     compiled with CPython (for comparison).
   - [src-bin-ratio-with-opy](metrics.wwz/bytecode/src-bin-ratio-with-opy.txt) -
     How big is the compiled output?
-- Native Code Metrics
-  - [overview](metrics.wwz/native-code/overview.txt) - An analysis of GCC's
+- OVM / CPython
+  - [overview](metrics.wwz/ovm/overview.txt) - An analysis of GCC's
     compilation of [OVM][] (a subset of CPython).  [Bloaty][] provides the
     underlying data.
   - [cpython-defs/overview](metrics.wwz/cpython-defs/overview.txt) - We try to
     ship as little of CPython as possible, and this is what's left.
+- `oil-native`.  The future of Oil is pure native code.
+  - [overview](metrics.wwz/oil-native/overview.txt) - Binary code size reported
+    by [Bloaty][].
 
 [cloc]: https://github.com/AlDanial/cloc
 [Bloaty]: https://github.com/google/bloaty
 [OVM]: //www.oilshell.org/cross-ref.html?tag=OVM#OVM
 
-
 ## Tests
+
+### Main Test Suites
 
 - [Oil Spec Tests](test/spec.wwz/oil.html).  Test new Oil language features.
 - [OSH Spec Tests](test/spec.wwz/osh.html).  Test OSH with existing shells, and
@@ -94,15 +105,19 @@ Test results, metrics, and benchmarks are shown below.
   with OSH.
 - [Unit Tests](test/unit.wwz/).  Python unit test results.
 
-More tests:
+### Other Suites
 
 - [Gold Tests](test/other.wwz/gold.txt).  Compare OSH against bash (using
   implicit assertions, no golden output.)
 - [osh2oil Tests](test/other.wwz/osh2oil.txt).  Test the conversion of OSH to
   Oil.
 - [parse-errors](test/other.wwz/parse-errors.txt).  A list of all parse errors.
-- [runtime-errors](test/other.wwz/runtime-errors.txt).  A list of all runtime
+  - [parse-errors-oil-native](test/other.wwz/parse-errors-oil-native.txt).
+    With the native binary.
+- [runtime-errors](test/other.wwz/runtime-errors.txt).  A list of shell runtime
   errors.
+- [oil-runtime-errors](test/other.wwz/oil-runtime-errors.txt).  Oil language
+  runtime errors.
 - [arena](test/other.wwz/arena.txt).  Testing an invariant for the parser.
 - [osh-usage](test/other.wwz/osh-usage.txt).  Misc tests of the `osh` binary.
 - [oshc-deps](test/other.wwz/oshc-deps.txt).  Tests for a subcommand in
@@ -116,7 +131,7 @@ More tests:
 
 [mgree/smoosh]: https://github.com/mgree/smoosh/tree/master/tests/shell
 
-## OPy Tests
+### For OPy
 
 The OPy compiler is used to compile Oil to bytecode, but isn't itself part of
 the release.
@@ -131,7 +146,7 @@ Tree-shaking:
 - [Symbols in Oil](test/opy.wwz/oil-symbols.txt)
 - [Symbols in OPy](test/opy.wwz/opy-symbols.txt)
 
-## Manual Tests
+### Manual Tests
 
 - [ ] Test build and install on OS X
 
@@ -155,7 +170,7 @@ domain-specific languages and code generation.
   elements, used in the lexer and in multiple parsers and evaluators.
 - The regex-based lexer uses two stages of code generation:
   - [frontend/lex.py](source-code.wwz/frontend/lex.py)
-  - [_devbuild/gen/osh-lex.re2c.h](source-code.wwz/_devbuild/gen/osh-lex.re2c.h)
+  - [_devbuild/tmp/osh-lex.re2c.h](source-code.wwz/_devbuild/tmp/osh-lex.re2c.h)
   - [_devbuild/gen/osh-lex.h](source-code.wwz/_devbuild/gen/osh-lex.h)
 - [frontend/syntax.asdl](source-code.wwz/frontend/syntax.asdl). The syntax tree
   for OSH and Oil.

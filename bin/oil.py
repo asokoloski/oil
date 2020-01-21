@@ -56,6 +56,7 @@ from asdl import runtime
 from core import alloc
 from core import comp_ui
 from core import dev
+from core import error
 from core import completion
 from core import main_loop
 from core import meta
@@ -329,8 +330,8 @@ def ShellMain(lang, argv0, argv, login_shell):
 
   if opts.one_pass_parse and not exec_opts.noexec:
     raise args.UsageError('--one-pass-parse requires noexec (-n)')
-  parse_ctx = parse_lib.ParseContext(arena, parse_opts, aliases, oil_grammar,
-                                     one_pass_parse=opts.one_pass_parse)
+  parse_ctx = parse_lib.ParseContext(arena, parse_opts, aliases, oil_grammar)
+  parse_ctx.Init_OnePassParse(opts.one_pass_parse)
 
   # Three ParseContext instances SHARE aliases.
   comp_arena = alloc.Arena()
@@ -340,15 +341,16 @@ def ShellMain(lang, argv0, argv, login_shell):
   # fix the issue where ` gets erased because it's not part of
   # set_completer_delims().
   comp_ctx = parse_lib.ParseContext(comp_arena, parse_opts, aliases,
-                                    oil_grammar, trail=trail1,
-                                    one_pass_parse=True)
+                                    oil_grammar)
+  comp_ctx.Init_Trail(trail1)
+  comp_ctx.Init_OnePassParse(True)
 
   hist_arena = alloc.Arena()
   hist_arena.PushSource(source.Unused('history'))
   trail2 = parse_lib.Trail()
   hist_ctx = parse_lib.ParseContext(hist_arena, parse_opts, aliases,
-                                    oil_grammar, 
-                                    trail=trail2)
+                                    oil_grammar)
+  hist_ctx.Init_Trail(trail2)
 
   # Deps helps manages dependencies.  These dependencies are circular:
   # - ex and word_ev, arith_ev -- for command sub, arith sub
@@ -444,6 +446,7 @@ def ShellMain(lang, argv0, argv, login_shell):
       builtin_e.DIRS: builtin.Dirs(mem, dir_stack, errfmt),
       builtin_e.PWD: builtin.Pwd(mem, errfmt),
 
+      builtin_e.TIMES: builtin.Times(),
       builtin_e.READ: builtin.Read(splitter, mem),
       builtin_e.HELP: builtin.Help(loader, errfmt),
       builtin_e.HISTORY: builtin.History(line_input),
@@ -491,9 +494,15 @@ def ShellMain(lang, argv0, argv, login_shell):
       builtin_e.UMASK: builtin_process.Umask,
 
       # Oil
-      builtin_e.REPR: builtin_oil.Repr(mem, errfmt),
       builtin_e.PUSH: builtin_oil.Push(mem, errfmt),
+      builtin_e.APPEND: builtin_oil.Append(mem, errfmt),
+
+      builtin_e.WRITE: builtin_oil.Write(mem, errfmt),
+      builtin_e.GETLINE: builtin_oil.Getline(mem, errfmt),
+
+      builtin_e.REPR: builtin_oil.Repr(mem, errfmt),
       builtin_e.USE: builtin_oil.Use(mem, errfmt),
+      builtin_e.OPTS: builtin_oil.Opts(mem, errfmt),
   }
 
   ex = cmd_exec.Executor(mem, fd_state, procs, builtins, exec_opts,
@@ -563,9 +572,8 @@ def ShellMain(lang, argv0, argv, login_shell):
     exec_opts.interactive = True
 
   else:
-    try:
-      script_name = arg_r.Peek()
-    except IndexError:
+    script_name = arg_r.Peek()
+    if script_name is None:
       if sys.stdin.isatty():
         arena.PushSource(source.Interactive())
         line_reader = py_reader.InteractiveLineReader(
@@ -692,14 +700,6 @@ def ShellMain(lang, argv0, argv, login_shell):
   return status
 
 
-def WokMain(main_argv):
-  raise NotImplementedError('wok')
-
-
-def BoilMain(main_argv):
-  raise NotImplementedError('boil')
-
-
 # TODO: Hook up to completion.
 SUBCOMMANDS = [
     'translate', 'arena', 'spans', 'format', 'deps', 'undefined-vars'
@@ -750,15 +750,15 @@ def OshCommandMain(argv):
 
   parse_opts = parse_lib.OilParseOptions()
   # parse `` and a[x+1]=bar differently
-  parse_ctx = parse_lib.ParseContext(arena, parse_opts, aliases, oil_grammar,
-                                     one_pass_parse=True)
+  parse_ctx = parse_lib.ParseContext(arena, parse_opts, aliases, oil_grammar)
+  parse_ctx.Init_OnePassParse(True)
 
   line_reader = reader.FileLineReader(f, arena)
   c_parser = parse_ctx.MakeOshParser(line_reader)
 
   try:
     node = main_loop.ParseWholeFile(c_parser)
-  except util.ParseError as e:
+  except error.Parse as e:
     ui.PrettyPrintError(e, arena)
     return 2
   assert node is not None
@@ -854,10 +854,6 @@ def AppBundleMain(argv):
 
   elif main_name == 'oil':
     return ShellMain('oil', argv0, main_argv, login_shell)
-  elif main_name == 'wok':
-    return WokMain(main_argv)
-  elif main_name == 'boil':
-    return BoilMain(main_argv)
 
   # For testing latency
   elif main_name == 'true':

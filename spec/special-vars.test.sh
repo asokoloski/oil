@@ -225,6 +225,30 @@ f
 ['4']
 ## END
 
+#### $LINENO in "bare" redirect arg (bug regression)
+filename=$TMP/bare3
+rm -f $filename
+> $TMP/bare$LINENO
+test -f $filename && echo written
+echo $LINENO
+## STDOUT: 
+written
+5
+## END
+## BUG zsh STDOUT: 
+## END
+
+#### $LINENO in redirect arg (bug regression)
+filename=$TMP/lineno_regression3
+rm -f $filename
+echo x > $TMP/lineno_regression$LINENO
+test -f $filename && echo written
+echo $LINENO
+## STDOUT: 
+written
+5
+## END
+
 #### $LINENO for [[
 echo one
 [[ $LINENO -eq 2 ]] && echo OK

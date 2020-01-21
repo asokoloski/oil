@@ -23,7 +23,14 @@ from osh import word_eval
 
 import libc
 
-from typing import Any, Optional, List
+from typing import Any, Dict, Optional, List, Union, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from _devbuild.gen.runtime_asdl import (
+      lvalue_t, lvalue__Named, lvalue__ObjIndex, lvalue__ObjAttr,
+  )
+  from _devbuild.gen.syntax_asdl import arg_list
+
 
 _ = log
 
@@ -65,6 +72,7 @@ class OilEvaluator(object):
       return val.obj
 
   def EvalPlusEquals(self, lval, rhs_py):
+    # type: (lvalue_t, Union[int, float]) -> Union[int, float]
     lhs_py = self.LookupVar(lval.name)
     if not isinstance(lhs_py, (int, float)):
       # TODO: Could point at the variable name
@@ -131,6 +139,7 @@ class OilEvaluator(object):
       return False
 
   def EvalArgList(self, args):
+    # type: (arg_list) -> Tuple[List[Any], Dict[str, Any]]
     """ Used by do f(x) and echo $f(x). """
     pos_args = []
     for arg in args.positional:
@@ -157,7 +166,7 @@ class OilEvaluator(object):
       return tuple(self.EvalExpr(ind) for ind in indices)
 
   def EvalPlaceExpr(self, place):
-    # type: (place_expr_t) -> None
+    # type: (place_expr_t) -> Union[lvalue__Named, lvalue__ObjIndex, lvalue__ObjAttr]
     if place.tag == place_expr_e.Var:
       return lvalue.Named(place.name.val)
 
@@ -542,7 +551,7 @@ class OilEvaluator(object):
     raise NotImplementedError(part.__class__.__name__)
 
   def _MaybeReplaceLeaf(self, node):
-    # type: (re_t) -> Optional[re_t]
+    # type: (re_t) -> Tuple[Optional[re_t], bool]
     """
     If a leaf node needs to be evaluated, do it and return the replacement.
     Otherwise return None.
@@ -652,7 +661,9 @@ class OilEvaluator(object):
       elif term.tag == class_literal_term_e.CharLiteral:
         # What about \0?
         # At runtime, ERE should disallow it.  But we can also disallow it here.
-        node.terms[i] = word_compile.EvalCharLiteralForRegex(term.tok)
+        new_leaf = word_compile.EvalCharLiteralForRegex(term.tok)
+        if new_leaf:
+          node.terms[i] = new_leaf
 
       if s is not None:
         # A string like '\x7f\xff' should be presented like
@@ -682,7 +693,7 @@ class OilEvaluator(object):
       return
 
     # TODO: How to consolidate this code with the above?
-    if node.tag == re_e.Group:
+    if node.tag in (re_e.Group, re_e.Capture):
       new_leaf, recurse = self._MaybeReplaceLeaf(node.child)
       if new_leaf:
         node.child = new_leaf
@@ -698,8 +709,12 @@ class OilEvaluator(object):
 
   def EvalRegex(self, node):
     # type: (re_t) -> re_t
+    """
+    Resolve the references in an eggex, e.g. Hex and $const in
     
-    # Regex Evaluation Shares the Same Structure, but uses slightly different
+    / Hex '.' $const "--$const" /
+    """
+    # Regex Evaluation Shares the Same Structure, but uses slightly different 
     # nodes.
     # * Speck/Token (syntactic concepts) -> Primitive (logical)
     # * Splice -> Resolved

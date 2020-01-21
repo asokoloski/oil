@@ -7,16 +7,20 @@ set -o nounset
 set -o pipefail
 set -o errexit
 
+source types/common.sh
+
 deps() {
   set -x
   #pip install typing pyannotate
 
   # got error with 0.67.0
   #pip3 install 'mypy==0.660'
-  pip3 install 'mypy'
+
+  # Without --upgrade, it won't install the latest version.
+  # In .travis.yaml we apparently install the latest version too (?)
+  pip3 install --upgrade 'mypy'
 }
 
-mypy() { ~/.local/bin/mypy "$@"; }
 # This has a bug
 #pyannotate() { ~/.local/bin/pyannotate "$@"; }
 
@@ -29,15 +33,9 @@ pyann-patched() {
   python $tool "$@"
 }
 
-typecheck() {
-  mypy --py2 "$@"
-}
-
-# --no-strict-optional issues
-# - simple sum type might be None, but generated PrettyTree() method uses
-#   obj.name
-
-iter-demo-asdl() {
+# NOTE: We're testing ASDL code generation with --strict because we might want
+# Oil to pass under --strict someday.
+typed-demo-asdl() {
   asdl/run.sh gen-typed-demo-asdl
   typecheck --strict \
     _devbuild/gen/typed_demo_asdl.py asdl/typed_demo.py
@@ -54,7 +52,7 @@ check-arith() {
     asdl/typed_arith_parse.py asdl/typed_arith_parse_test.py asdl/tdop.py
 }
 
-iter-arith-asdl() {
+typed-arith-asdl() {
   asdl/run.sh gen-typed-arith-asdl
   check-arith
 
@@ -70,10 +68,80 @@ iter-arith-asdl() {
   echo
 }
 
+
+readonly MORE_OIL_MANIFEST=types/more-oil-manifest.txt
+
+checkable-files() {
+  # syntax_abbrev.py is "included" in _devbuild/gen/syntax_asdl.py; it's not a standalone module
+  metrics/source-code.sh osh-files | grep -v syntax_abbrev.py
+  metrics/source-code.sh oil-lang-files
+}
+
+need-typechecking() {
+  # This command is useful to find files to annotate and add to
+  # $MORE_OIL_MANIFEST.
+  # It shows all the files that are not included in
+  # $MORE_OIL_MANIFEST or $OSH_PARSE_MANIFEST, and thus are not yet
+  # typechecked by typecheck-more-oil here or
+  # `types/osh_parse.sh travis`.
+  comm -2 -3 \
+    <(checkable-files | sort | grep '.py$' | sed 's@^@./@') \
+    <(cat $MORE_OIL_MANIFEST $OSH_PARSE_MANIFEST | sort) \
+    | xargs wc -l | sort -n
+}
+
+typecheck-files() {
+  $0 typecheck --follow-imports=silent $MYPY_FLAGS "$@"
+}
+
+readonly -a COMMON_TYPE_MODULES=(_devbuild/gen/runtime_asdl.py _devbuild/gen/syntax_asdl.py)
+
+add-imports() {
+  # Temporary helper to add missing class imports to the 'if
+  # TYPE_CHECKING:' block of a single module, if the relevant
+  # classes are found in one of COMMON_TYPE_MODULES
+
+  # Also, this saves the typechecking output to the file named by
+  # $typecheck_out, to make it possible to avoid having to run two
+  # redundant (and slow) typechecking commands.  You can just cat that
+  # file after running this function.
+  local module=$1
+  export PYTHONPATH=.
+  readonly module_tmp=_tmp/add-imports-module.tmp
+  readonly typecheck_out=_tmp/add-imports-typecheck-output
+  set +o pipefail
+  # unbuffer is just to preserve colorization (it tricks the command
+  # into thinking it's writing to a pty instead of a pipe)
+  unbuffer types/run.sh typecheck-files "$module" | tee "$typecheck_out" | \
+    grep 'Name.*is not defined' | sed -r 's/.*'\''(\w+)'\''.*/\1/' | \
+    sort -u | python devtools/findclassdefs.py "${COMMON_TYPE_MODULES[@]}" | \
+    xargs python devtools/typeimports.py "$module" > "$module_tmp"
+  set -o pipefail
+
+  if ! diff -q "$module_tmp" "$module" > /dev/null
+  then
+    cp $module "_tmp/add-imports.$(basename $module).bak"
+    mv "$module_tmp" "$module"
+	echo "Updated $module"
+  fi
+}
+
+typecheck-more-oil() {
+  # The --follow-imports=silent option allows adding type annotations
+  # in smaller steps without worrying about triggering a bunch of
+  # errors from imports.  In the end, we may want to remove it, since
+  # everything will be annotated anyway.  (that would require
+  # re-adding assert-one-error and its associated cruft, though).
+  cat $MORE_OIL_MANIFEST | xargs -- $0 typecheck-files
+}
+
 travis() {
-  iter-demo-asdl
+  typed-demo-asdl
   # Avoid spew on Travis.
-  iter-arith-asdl > /dev/null
+  typed-arith-asdl > /dev/null
+
+  # Ad hoc list of additional files
+  typecheck-more-oil
 }
 
 # Alias for convenience
@@ -94,23 +162,7 @@ peek-type-info() {
 }
 
 apply-types() {
-  #local -a files=( asdl/tdop.py asdl/typed_arith_parse*.py )
-
-  #local -a files=( core/util.py asdl/runtime.py )
-  #local -a files=(asdl/format.py )
-  #local -a files=(
-  #  frontend/lexer.py frontend/match.py frontend/reader.py core/alloc.py
-  #  core/meta.py )
-  #local -a files=(osh/word.py)
-
-  #local -a files=(frontend/parse_lib.py)
-  local -a files=(core/meta.py core/id_kind.py frontend/tdop.py osh/arith_parse.py)
-  #local -a files=(core/id_kind.py)
-  #local -a files=(frontend/match.py)
-  #local -a files=(osh/bool_parse.py)
-  #local -a files=(osh/word_parse.py)
-  #local -a files=(osh/cmd_parse.py)
-  #local -a files=(core/ui.py)
+  local -a files=(frontend/args.py)
 
   #local -a files=( $(cat _tmp/osh-parse-src.txt | grep -v syntax_asdl.py ) )
 

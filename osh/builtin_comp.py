@@ -2,16 +2,25 @@
 builtin_comp.py - Completion builtins
 """
 
-from _devbuild.gen import osh_help  # generated file
 from _devbuild.gen.runtime_asdl import value_e
 from core import completion
+from core import error
 from core import ui
-from core import util
 #from core.util import log
 from frontend import args
 from frontend import lex
 from osh import builtin
 from osh import state
+
+from mycpp import mylib
+if mylib.PYTHON:
+  # Hack because we don't want libcmark.so dependency for build/dev.sh minimal
+  try:
+    from _devbuild.gen import help_
+  except ImportError:
+    class _DummyModule(object): pass
+    help_ = _DummyModule()
+    help_.TOPICS = []
 
 
 def _DefineFlags(spec):
@@ -156,7 +165,8 @@ class SpecBuilder(object):
         a = completion.VariablesAction(ex.mem)
 
       elif name == 'helptopic':
-        a = _FixedWordsAction(osh_help.TOPIC_LOOKUP)
+        # Note: it would be nice to have 'helpgroup' for help -i too
+        a = _FixedWordsAction(help_.TOPICS)
 
       elif name == 'setopt':
         a = _FixedWordsAction(state.SET_OPTION_NAMES)
@@ -186,7 +196,7 @@ class SpecBuilder(object):
       arena = self.parse_ctx.arena
       try:
         arg_word = w_parser.ReadForPlugin()
-      except util.ParseError as e:
+      except error.Parse as e:
         ui.PrettyPrintError(e, arena)
         raise  # Let 'complete' or 'compgen' return 2
 
@@ -263,7 +273,7 @@ class Complete(object):
     base_opts = dict(arg.opt_changes)
     try:
       user_spec = self.spec_builder.Build(argv, arg, base_opts)
-    except util.ParseError as e:
+    except error.Parse as e:
       # error printed above
       return 2
     for command in commands:
@@ -309,7 +319,7 @@ class CompGen(object):
     base_opts = dict(arg.opt_changes)
     try:
       user_spec = self.spec_builder.Build(argv, arg, base_opts)
-    except util.ParseError as e:
+    except error.Parse as e:
       # error printed above
       return 2
 
@@ -323,7 +333,7 @@ class CompGen(object):
       for m, _ in user_spec.Matches(comp):
         matched = True
         print(m)
-    except util.FatalRuntimeError:
+    except error.FatalRuntime:
       # - DynamicWordsAction: We already printed an error, so return failure.
       return 1
 

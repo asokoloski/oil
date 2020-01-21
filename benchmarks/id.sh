@@ -75,7 +75,7 @@ dump-shell-id() {
 
   # Add extra repository info for osh.
   case $sh in
-    */osh)
+    */osh*)
       local branch
       branch=$(git rev-parse --abbrev-ref HEAD)
       echo $branch > $out_dir/git-branch.txt
@@ -84,11 +84,14 @@ dump-shell-id() {
   esac
 
   case $name in
-    bash|zsh)
+    bash|zsh|yash)
       $sh --version > $out_dir/version.txt
       ;;
     osh)
       $sh --version > $out_dir/osh-version.txt
+      ;;
+    osh_parse.opt.stripped)
+      # just rely on the stuff above
       ;;
     dash|mksh)
       # These don't have version strings!
@@ -297,10 +300,10 @@ publish-compiler-id() {
 #
 # The table can be passed to other benchmarks to ensure that their provenance
 # is recorded.
-#
-# TODO: Move to id.sh/provenance.sh?
 
 shell-provenance() {
+  ### Write info about the given shells to a file, and print its name
+
   local job_id
   job_id="$(date +%Y-%m-%d__%H-%M-%S)"
   local host
@@ -317,13 +320,7 @@ shell-provenance() {
 
   local shell_hash
 
-  # NOTE: $OSH_OVM is set by devtools/release.sh to the RELATIVE path of the
-  # tar-built one.  Instead of the default of $PWD/_bin/osh.
-
-  # NOTE: These are NOT the versions of bash/dash/etc. in _tmp/spec-bin!  I
-  # guess we should test distro-provided binaries.
-
-  for sh_path in bash dash mksh zsh bin/osh $OSH_OVM; do
+  for sh_path in "$@"; do
     # There will be two different OSH
     local name=$(basename $sh_path)
 

@@ -120,20 +120,6 @@ Yes:
     )  # this is actually a comment
 
 
-### break / continue / return are keywords, not builtins
-
-This means that they aren't "dynamic":
-
-    b=break
-    while true; do
-      $b  # doesn't break in OSH
-    done
-
-Static control flow will allow static analysis of shell scripts.
-
-(Test cases are in [spec/loop][]).
-
-
 ### Spaces aren't allowed in LHS indices
 
 Bash allows:
@@ -147,24 +133,40 @@ OSH only allows:
 because it parses with limited lookahead.  The first line would result in the
 execution of a command named `a[1`.
 
+### break / continue / return are keywords, not builtins
+
+This means that they aren't "dynamic":
+
+    b=break
+    while true; do
+      $b  # doesn't break in OSH
+    done
+
+Static control flow will allow static analysis of shell scripts.
+
+(Test cases are in [spec/loop][]).
+
+### Oil Has More Builtins, Which Shadow External Commands
+
+For example, `push` is a builtin in Oil, but not in `bash`.  Use `env push` or
+`/path/to/push` if you want to run an external command.
+
+(Note that a user-defined function `push` take priority over the builtin
+`push`.
+
+### Oil Has More Keywords, Which Shadow Builtins, Functions, and Commands
+
+In contrast with builtins, **keywords** affect shell parsing.
+
+For example, `func` is a keyword in Oil, but not in `bash`.  To run a command
+named `func`, use `command func arg1`.
+
+Note that all shells have extensions that cause this issue.  For example, `[[`
+is a keyword in `bash` but not in POSIX shell.
+
 ## More Parsing Differences
 
 These differences occur in subsequent stages of parsing, or in runtime parsing.
-
-### Variable names in assignments must be constants
-
-That is, they can't be variables themselves.
-
-No:
-
-    declare "$1"=abc
-
-Yes:
-
-    declare x=abc
-
-
-NOTE: This restriction will probably be relaxed.
 
 ### Brace expansion is all or nothing
 

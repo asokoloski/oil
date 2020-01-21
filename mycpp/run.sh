@@ -42,7 +42,7 @@ readonly REPO_ROOT=$(cd $THIS_DIR/.. && pwd)
 readonly MYPY_REPO=~/git/languages/mypy
 
 source $REPO_ROOT/test/common.sh  # for R_PATH
-source $REPO_ROOT/build/common.sh  # for $CLANG_REL_PATH, $PREPARE_DIR
+source $REPO_ROOT/build/common.sh  # for $CLANG_DIR_RELATIVE, $PREPARE_DIR
 source examples.sh
 source harness.sh
 
@@ -101,7 +101,8 @@ translate-ordered() {
   local out=_gen/${name}.cc
 
   ( source _tmp/mycpp-venv/bin/activate
-    time PYTHONPATH=$MYPY_REPO ./mycpp_main.py "$@" > $raw
+    time PYTHONPATH=$MYPY_REPO MYPYPATH=$REPO_ROOT:$REPO_ROOT/native \
+      ./mycpp_main.py "$@" > $raw
   )
 
   {
@@ -158,8 +159,8 @@ compile-with-asdl() {
 
   local more_flags='-O0 -g'  # to debug crashes
   #local more_flags=''
-  $CXX -ferror-limit=50 -o _bin/$name $CPPFLAGS $more_flags \
-    -I . -I ../_devbuild/gen -I ../_devbuild/gen-cpp -I _gen -I ../cpp \
+  $CXX -o _bin/$name $CPPFLAGS $more_flags \
+    -I . -I ../_devbuild/gen -I ../_build/cpp -I _gen -I ../cpp \
     mylib.cc $src "$@" -lstdc++
 }
 
@@ -168,7 +169,7 @@ compile-with-asdl() {
 
 # -O3 is faster than -O2 for fib, but let's use -O2 since it's "standard"?
 
-CPPFLAGS='-Wall -O2 -std=c++11 '
+CPPFLAGS='-Wall -O0 -g -std=c++11 -ferror-limit=1000'
 
 # NOTES on timings:
 
@@ -220,7 +221,7 @@ cpp-compile-run() {
 }
 
 target-lang() {
-  cpp-compile-run target_lang
+  cpp-compile-run target_lang ../cpp/dumb_alloc.cc -I ../cpp
 }
 
 heap() {

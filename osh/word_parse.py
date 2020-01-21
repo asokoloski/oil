@@ -48,10 +48,10 @@ lex_mode_e.VSub_ArgDQ
 """
 
 from _devbuild.gen import grammar_nt
-from _devbuild.gen.id_kind_asdl import Id, Kind, Id_t
+from _devbuild.gen.id_kind_asdl import Id, Id_t, Id_str, Kind
 from _devbuild.gen.types_asdl import lex_mode_t, lex_mode_e
 from _devbuild.gen.syntax_asdl import (
-    token, speck,
+    Token, speck,
     double_quoted, single_quoted, simple_var_sub, braced_var_sub, command_sub,
     sh_array_literal,
 
@@ -59,9 +59,9 @@ from _devbuild.gen.syntax_asdl import (
 
     suffix_op, suffix_op_t, suffix_op__Slice, suffix_op__PatSub,
 
-    word, word_t, word__Compound, word__Token,
-    word_part, word_part_t, word_part__Literal, word_part__ArithSub,
-    word_part__ExtGlob, word_part__ExprSub,
+    word, word_e, word_t, compound_word,
+    word_part, word_part_e, word_part_t,
+    word_part__ArithSub, word_part__ExtGlob, word_part__ExprSub,
 
     command, command_t, command__ForExpr, command__Proc, command__Func,
 
@@ -69,12 +69,14 @@ from _devbuild.gen.syntax_asdl import (
 )
 from core.util import p_die
 from core.util import log
+from core import ui
 from frontend import lookup
 from frontend import reader
-from frontend import tdop
+from osh import tdop
 from osh import arith_parse
 from osh import braces
 from osh import word_
+from mycpp.mylib import NewStr
 
 from typing import List, Optional, Tuple, cast
 from typing import TYPE_CHECKING
@@ -85,27 +87,43 @@ if TYPE_CHECKING:
 
 _ = log
 
-class WordParser(object):
+KINDS_THAT_END_WORDS = [Kind.Eof, Kind.WS, Kind.Op, Kind.Right]
 
-  def __init__(self, parse_ctx, lexer, line_reader,
-               lex_mode=lex_mode_e.ShCommand):
-    # type: (ParseContext, Lexer, _Reader, lex_mode_t) -> None
+
+class WordEmitter(object):
+  """Common interface for [ and [[ """
+
+  def ReadWord(self, lex_mode):
+    # type: (lex_mode_t) -> word_t
+    raise NotImplementedError()
+
+
+class WordParser(WordEmitter):
+
+  def __init__(self, parse_ctx, lexer, line_reader):
+    # type: (ParseContext, Lexer, _Reader) -> None
     self.parse_ctx = parse_ctx
+    self.arena = parse_ctx.arena
     self.lexer = lexer
     self.line_reader = line_reader
 
     self.parse_opts = parse_ctx.parse_opts
-    self.Reset(lex_mode=lex_mode)
+    self.Reset()
 
-  def Reset(self, lex_mode=lex_mode_e.ShCommand):
+  def Init(self, lex_mode):
     # type: (lex_mode_t) -> None
+    """Used to parse arithmetic, see ParseContext."""
+    self.next_lex_mode = lex_mode
+
+  def Reset(self):
+    # type: () -> None
     """Called by interactive loop."""
     # For _Peek()
-    self.cur_token = None  # type: token
+    self.cur_token = None  # type: Token
     self.token_kind = Kind.Undefined
     self.token_type = Id.Undefined_Tok
 
-    self.next_lex_mode = lex_mode
+    self.next_lex_mode = lex_mode_e.ShCommand
 
     # For newline.  TODO: I think we can do this iteratively, without member
     # state.
@@ -115,15 +133,14 @@ class WordParser(object):
     self.buffered_word = None  # type: word_t
 
   def _Peek(self):
-    # type: () -> token
+    # type: () -> None
     """Helper method."""
-    if self.next_lex_mode is not None:
+    if self.next_lex_mode != lex_mode_e.Undefined:
       self.cur_token = self.lexer.Read(self.next_lex_mode)
       self.token_type = self.cur_token.id
       self.token_kind = lookup.LookupKind(self.token_type)
       self.parse_ctx.trail.AppendToken(self.cur_token)   # For completion
-      self.next_lex_mode = None
-    return self.cur_token
+      self.next_lex_mode = lex_mode_e.Undefined
 
   def _Next(self, lex_mode):
     # type: (lex_mode_t) -> None
@@ -133,21 +150,22 @@ class WordParser(object):
     """
     self.next_lex_mode = lex_mode
 
-  def _ReadVarOpArg(self, arg_lex_mode, eof_type=Id.Undefined_Tok,
-                    empty_ok=True):
+  def _ReadVarOpArg(self, arg_lex_mode):
+    # type: (lex_mode_t) -> word_t
+    return self._ReadVarOpArg3(arg_lex_mode, Id.Undefined_Tok, True)
+
+  def _ReadVarOpArg3(self, arg_lex_mode, eof_type, empty_ok):
     # type: (lex_mode_t, Id_t, bool) -> word_t
     """
     Args:
       empty_ok: Whether Empty can be returned
     """
-
     # NOTE: Operators like | and < are not treated as special, so ${a:- | >} is
     # valid, even when unquoted.
     self._Next(arg_lex_mode)
     self._Peek()
 
-    w = self._ReadCompoundWord(lex_mode=arg_lex_mode, eof_type=eof_type,
-                               empty_ok=empty_ok)
+    w = self._ReadCompoundWord3(arg_lex_mode, eof_type, empty_ok)
 
     # If the Compound has no parts, and we're in a double-quoted VarSub
     # arg, and empty_ok, then return Empty.  This is so it can evaluate to
@@ -161,7 +179,8 @@ class WordParser(object):
     # NOTE: empty_ok is False only for the PatSub pattern, which means we'll
     # return a Compound with no parts, which is explicitly checked with a
     # custom error message.
-    if not w.parts and arg_lex_mode == lex_mode_e.VSub_ArgDQ and empty_ok:
+    if (len(w.parts) == 0 and arg_lex_mode == lex_mode_e.VSub_ArgDQ
+        and empty_ok):
       return word.Empty()
 
     return w
@@ -172,12 +191,14 @@ class WordParser(object):
     self._Next(lex_mode_e.Arith)
     self._Peek()
     if self.token_type == Id.Arith_Colon:  # A pun for Id.VOp2_Colon
-      begin = None  # no beginning specified
+      # no beginning specified
+      begin = None  # type: Optional[arith_expr_t]
     else:
       begin = self._ReadArithExpr()
 
     if self.token_type == Id.Arith_RBrace:
-      return suffix_op.Slice(begin, None)  # No length specified
+      no_length = None  # type: Optional[arith_expr_t]  # No length specified
+      return suffix_op.Slice(begin, no_length)
 
     # Id.Arith_Colon is a pun for Id.VOp2_Colon
     if self.token_type == Id.Arith_Colon:
@@ -185,8 +206,7 @@ class WordParser(object):
       length = self._ReadArithExpr()
       return suffix_op.Slice(begin, length)
 
-    p_die("Unexpected token in slice: %r", self.cur_token.val,
-          token=self.cur_token)
+    p_die("Expected : or } in slice", token=self.cur_token)
 
   def _ReadPatSubVarOp(self, lex_mode):
     # type: (lex_mode_t) -> suffix_op__PatSub
@@ -195,16 +215,17 @@ class WordParser(object):
     VarSub    = ...
               | VarOf '/' Match '/' WORD
     """
-    pat = self._ReadVarOpArg(lex_mode, eof_type=Id.Lit_Slash, empty_ok=False)
-    assert isinstance(pat, word__Compound)  # Because empty_ok=False
+    # stop at eof_type=Lit_Slash, empty_ok=False
+    UP_pat = self._ReadVarOpArg3(lex_mode, Id.Lit_Slash, False)
+    assert UP_pat.tag_() == word_e.Compound, UP_pat  # Because empty_ok=False
+    pat = cast(compound_word, UP_pat)
 
     if len(pat.parts) == 1:
       ok, s, quoted = word_.StaticEval(pat)
       if ok and s == '/' and not quoted:  # Looks like ${a////c}, read again
         self._Next(lex_mode)
         self._Peek()
-        p = word_part.Literal(self.cur_token)
-        pat.parts.append(p)
+        pat.parts.append(self.cur_token)
 
     if len(pat.parts) == 0:
       p_die('Pattern in ${x/pat/replace} must not be empty',
@@ -212,9 +233,9 @@ class WordParser(object):
 
     replace_mode = Id.Undefined_Tok
     # Check for / # % modifier on pattern.
-    first_part = pat.parts[0]
-    if isinstance(first_part, word_part__Literal):
-      lit_id = first_part.token.id
+    UP_first_part = pat.parts[0]
+    if UP_first_part.tag_() == word_part_e.Literal:
+      lit_id = cast(Token, UP_first_part).id
       if lit_id in (Id.Lit_Slash, Id.Lit_Pound, Id.Lit_Percent):
         pat.parts.pop(0)
         replace_mode = lit_id
@@ -234,14 +255,13 @@ class WordParser(object):
         # NOTE: I think this never happens.
         # We're either in the VS_ARG_UNQ or VS_ARG_DQ lex state, and everything
         # there is Lit_ or Left_, except for }.
-        p_die("Expected } after replacement string, got %s", self.cur_token,
-              token=self.cur_token)
+        p_die("Expected } after replacement string, got %s",
+              NewStr(Id_str(self.token_type)), token=self.cur_token)
 
       return suffix_op.PatSub(pat, replace, replace_mode)
 
     # Happens with ${x//} and ${x///foo}, see test/parse-errors.sh
-    p_die("Expected } after pat sub, got %r", self.cur_token.val,
-          token=self.cur_token)
+    p_die('Expected } or / to close pattern', token=self.cur_token)
 
   def _ReadSubscript(self):
     # type: () -> bracket_op_t
@@ -249,9 +269,9 @@ class WordParser(object):
     """
     # Lookahead to see if we get @ or *.  Otherwise read a full arithmetic
     # expression.
-    t2 = self.lexer.LookAhead(lex_mode_e.Arith)
-    if t2.id in (Id.Lit_At, Id.Arith_Star):
-      op = bracket_op.WholeArray(t2.id)  # type: bracket_op_t
+    next_id = self.lexer.LookAhead(lex_mode_e.Arith)
+    if next_id in (Id.Lit_At, Id.Arith_Star):
+      op = bracket_op.WholeArray(next_id)  # type: bracket_op_t
 
       self._Next(lex_mode_e.Arith)  # skip past [
       self._Peek()
@@ -263,8 +283,7 @@ class WordParser(object):
       op = bracket_op.ArrayIndex(anode)
 
     if self.token_type != Id.Arith_RBracket:  # Should be looking at ]
-      p_die('Expected ] after subscript, got %r', self.cur_token.val,
-            token=self.cur_token)
+      p_die('Expected ] to close subscript', token=self.cur_token)
 
     self._Next(lex_mode_e.VSub_2)  # skip past ]
     self._Peek()  # Needed to be in the same spot as no subscript
@@ -289,12 +308,13 @@ class WordParser(object):
     else:
       bracket_op = None
 
-    part = braced_var_sub(name_token)
+    part = braced_var_sub()
+    part.token = name_token
     part.bracket_op = bracket_op
     return part
 
-  def _ParseVarExpr(self, arg_lex_mode):
-    # type: (lex_mode_t) -> braced_var_sub
+  def _ParseVarExpr(self, arg_lex_mode, allow_query=False):
+    # type: (lex_mode_t, bool) -> braced_var_sub
     """
     Start parsing at the op -- we already skipped past the name.
     """
@@ -310,8 +330,7 @@ class WordParser(object):
       op_id = self.token_type
       arg_word = self._ReadVarOpArg(arg_lex_mode)
       if self.token_type != Id.Right_DollarBrace:
-        p_die('Unexpected token (after VTest): %r', self.cur_token.val,
-              token=self.cur_token)
+        p_die('Expected } to close ${', token=self.cur_token)
 
       part.suffix_op = suffix_op.Unary(op_id, arg_word)
 
@@ -325,57 +344,61 @@ class WordParser(object):
       op_id = self.token_type
       arg_word = self._ReadVarOpArg(arg_lex_mode)
       if self.token_type != Id.Right_DollarBrace:
-        p_die('Unexpected token (after VOp1): %r', self.cur_token.val,
-              token=self.cur_token)
+        p_die('Expected } to close ${', token=self.cur_token)
 
       part.suffix_op = suffix_op.Unary(op_id, arg_word)
 
     elif op_kind == Kind.VOp2:
       if self.token_type == Id.VOp2_Slash:
         op_spid = self.cur_token.span_id  # for attributing error to /
+        patsub_op = self._ReadPatSubVarOp(arg_lex_mode)
+        patsub_op.spids.append(op_spid)
 
-        # TODO: op_temp is only necessary for MyPy.  It can be removed when
-        # 'spids' are put on the base class suffix_op_t.
-        op_temp = self._ReadPatSubVarOp(arg_lex_mode)
-        op_temp.spids.append(op_spid)
-
-        op = cast(suffix_op_t, op_temp)  # for MyPy
+        # awkwardness for mycpp; could fix
+        temp = cast(suffix_op_t, patsub_op)
+        part.suffix_op = temp
 
         # Checked by the method above
         assert self.token_type == Id.Right_DollarBrace, self.cur_token
 
       elif self.token_type == Id.VOp2_Colon:
-        op = self._ReadSliceVarOp()
+        part.suffix_op = self._ReadSliceVarOp()
         # NOTE: } in arithmetic mode.
         if self.token_type != Id.Arith_RBrace:
           # Token seems off; doesn't point to X in # ${a:1:2 X
-          p_die('Unexpected token after slice: %r', self.cur_token.val,
-                token=self.cur_token)
+          p_die('Expected } to close ${', token=self.cur_token)
 
       else:
-        p_die('Unexpected token %r', self.cur_token.val, token=self.cur_token)
+        # TODO: Does this ever happen?
+        p_die('Unexpected token in ${} (%s)', 'VOp2', token=self.cur_token)
 
-      part.suffix_op = op
+    elif op_kind == Kind.VOp3:
+      if allow_query:
+        op_id = self.token_type
+        part.suffix_op = suffix_op.Nullary(op_id)
+        self._Next(lex_mode_e.VSub_2)  # Expecting }
+        self._Peek()
+      else:
+        p_die("Unexpected token in ${} (%s)", 'VOp3', token=self.cur_token)
 
     # NOTE: Arith_RBrace is for slicing, because it reads } in arithmetic
     # mode.  It's redundantly checked above.
     if self.token_type not in (Id.Right_DollarBrace, Id.Arith_RBrace):
       # ${a.} or ${!a.}
-      p_die('Expected } after var sub, got %r', self.cur_token.val,
-            token=self.cur_token)
+      p_die('Expected } to close ${', token=self.cur_token)
 
     # Now look for ops
     return part
 
-  def ReadBracedBracedVarSub(self, left_token):
-    # type: (token) -> Tuple[braced_var_sub, token]
-    """   For expressions like var x = ${x:-"default"}.  """
-    part = self._ReadBracedBracedVarSub(left_token)
+  def ReadBracedVarSub(self, left_token):
+    # type: (Token) -> Tuple[braced_var_sub, Token]
+    """   For Oil expressions like var x = ${x:-"default"}.  """
+    part = self._ReadBracedVarSub(left_token, False)  # not quoted
     last_token = self.cur_token
     return part, last_token
 
-  def _ReadBracedBracedVarSub(self, left_token, d_quoted=False):
-    # type: (token, bool) -> braced_var_sub
+  def _ReadBracedVarSub(self, left_token, d_quoted):
+    # type: (Token, bool) -> braced_var_sub
     """For the ${} expression language.
 
     NAME        = [a-zA-Z_][a-zA-Z0-9_]*
@@ -445,16 +468,15 @@ class WordParser(object):
 
     if ty == Id.VSub_Pound:
       # Disambiguate
-      t = self.lexer.LookAhead(lex_mode_e.VSub_1)
-      if t.id not in (Id.Unknown_Tok, Id.Right_DollarBrace):
+      next_id = self.lexer.LookAhead(lex_mode_e.VSub_1)
+      if next_id not in (Id.Unknown_Tok, Id.Right_DollarBrace):
         # e.g. a name, '#' is the prefix
         self._Next(lex_mode_e.VSub_1)
         part = self._ParseVarOf()
 
         self._Peek()
         if self.token_type != Id.Right_DollarBrace:
-          p_die("Expected } after length expression, got %r",
-                self.cur_token.val, token=self.cur_token)
+          p_die('Expected } after length expression', token=self.cur_token)
 
         part.prefix_op = speck(ty, self.cur_token.span_id)
 
@@ -462,8 +484,8 @@ class WordParser(object):
         part = self._ParseVarExpr(arg_lex_mode)
 
     elif ty == Id.VSub_Bang:
-      t = self.lexer.LookAhead(lex_mode_e.VSub_1)
-      if t.id not in (Id.Unknown_Tok, Id.Right_DollarBrace):
+      next_id = self.lexer.LookAhead(lex_mode_e.VSub_1)
+      if next_id not in (Id.Unknown_Tok, Id.Right_DollarBrace):
         # e.g. a name, '!' is the prefix
         # ${!a} -- this is a ref
         # ${!3} -- this is ref
@@ -471,7 +493,7 @@ class WordParser(object):
         # ${!a[@]} -- this is a keys
         # No lookahead -- do it in a second step, or at runtime
         self._Next(lex_mode_e.VSub_1)
-        part = self._ParseVarExpr(arg_lex_mode)
+        part = self._ParseVarExpr(arg_lex_mode, allow_query=True)
 
         part.prefix_op = speck(ty, self.cur_token.span_id)
 
@@ -484,7 +506,7 @@ class WordParser(object):
 
     else:
       # e.g. ${^}
-      p_die('Unexpected token %r', self.cur_token.val, token=self.cur_token)
+      p_die('Unexpected token in ${}', token=self.cur_token)
 
     part.spids.append(left_token.span_id)
 
@@ -498,7 +520,7 @@ class WordParser(object):
     # type: (lex_mode_t) -> single_quoted
     """Interal method to read a word_part."""
     left_token = self.cur_token
-    tokens = []  # type: List[token]
+    tokens = []  # type: List[Token]
     # In command mode, we never disallow backslashes like '\'
     self.ReadSingleQuoted(lex_mode, left_token, tokens, False)
 
@@ -508,7 +530,7 @@ class WordParser(object):
     return node
 
   def ReadSingleQuoted(self, lex_mode, left_token, tokens, no_backslashes):
-    # type: (lex_mode_t, token, List[token], bool) -> token
+    # type: (lex_mode_t, Token, List[Token], bool) -> Token
     """Used by expr_parse.py."""
     done = False
     while not done:
@@ -531,9 +553,7 @@ class WordParser(object):
         done = True  # assume Id.Right_SingleQuote
 
       else:
-        raise AssertionError(
-            'Unhandled token in single-quoted part %s (%s)' %
-            (self.cur_token, self.token_kind))
+        raise AssertionError(self.cur_token)
     return self.cur_token
 
   def _ReadDoubleQuotedLeftParts(self):
@@ -543,7 +563,7 @@ class WordParser(object):
       return self._ReadCommandSub(self.token_type)
 
     if self.token_type == Id.Left_DollarBrace:
-      return self._ReadBracedBracedVarSub(self.cur_token, d_quoted=True)
+      return self._ReadBracedVarSub(self.cur_token, True)  # DQ
 
     if self.token_type == Id.Left_DollarDParen:
       return self._ReadArithSub()
@@ -577,7 +597,7 @@ class WordParser(object):
       return self._ReadCommandSub(self.token_type)
 
     if self.token_type == Id.Left_DollarBrace:
-      return self._ReadBracedBracedVarSub(self.cur_token, d_quoted=False)
+      return self._ReadBracedVarSub(self.cur_token, False)  # not DQ
 
     if self.token_type == Id.Left_DollarDParen:
       return self._ReadArithSub()
@@ -585,13 +605,13 @@ class WordParser(object):
     if self.token_type == Id.Left_DollarBracket:
       return self._ReadExprSub(lex_mode_e.ShCommand)
 
-    raise AssertionError('%s not handled' % self.cur_token)
+    raise AssertionError(self.cur_token)
 
   def _ReadExtGlob(self):
     # type: () -> word_part__ExtGlob
     """
     Grammar:
-      Item         = word.Compound | EPSILON  # important: @(foo|) is allowed
+      Item         = compound_word | EPSILON  # important: @(foo|) is allowed
       LEFT         = '@(' | '*(' | '+(' | '?(' | '!('
       RIGHT        = ')'
       ExtGlob      = LEFT (Item '|')* Item RIGHT  # ITEM may be empty
@@ -599,7 +619,7 @@ class WordParser(object):
     """
     left_token = self.cur_token
     arms = []  # type: List[word_t]
-    spids = []
+    spids = []  # type: List[int]
     spids.append(left_token.span_id)
 
     self.lexer.PushHint(Id.Op_RParen, Id.Right_ExtGlob)
@@ -612,19 +632,19 @@ class WordParser(object):
 
       if self.token_type == Id.Right_ExtGlob:
         if not read_word:
-          arms.append(word.Compound())
+          arms.append(compound_word())
         spids.append(self.cur_token.span_id)
         break
 
       elif self.token_type == Id.Op_Pipe:
         if not read_word:
-          arms.append(word.Compound())
+          arms.append(compound_word())
         read_word = False
         self._Next(lex_mode_e.ExtGlob)
 
       # lex mode EXTGLOB should only produce these 4 kinds of tokens
       elif self.token_kind in (Kind.Lit, Kind.Left, Kind.VSub, Kind.ExtGlob):
-        w = self._ReadCompoundWord(lex_mode=lex_mode_e.ExtGlob)
+        w = self._ReadCompoundWord(lex_mode_e.ExtGlob)
         arms.append(w)
         read_word = True
 
@@ -633,14 +653,14 @@ class WordParser(object):
               token=left_token)
 
       else:
-        raise AssertionError('Unexpected token %r' % self.cur_token)
+        raise AssertionError(self.cur_token)
 
     part = word_part.ExtGlob(left_token, arms)
     part.spids.extend(spids)
     return part
 
   def _ReadLikeDQ(self, left_dq_token, out_parts):
-    # type: (Optional[token], List[word_part_t]) -> None
+    # type: (Optional[Token], List[word_part_t]) -> None
     """
     Args:
       left_dq_token: A token if we are reading a double quoted part, or None if
@@ -656,7 +676,7 @@ class WordParser(object):
         if self.token_type == Id.Lit_EscapedChar:
           part = word_part.EscapedLiteral(self.cur_token)  # type: word_part_t
         else:
-          part = word_part.Literal(self.cur_token)
+          part = self.cur_token
         out_parts.append(part)
 
       elif self.token_kind == Kind.Left:
@@ -675,7 +695,7 @@ class WordParser(object):
           done = True
         else:
           # In a here doc, the right quote is literal!
-          out_parts.append(word_part.Literal(self.cur_token))
+          out_parts.append(self.cur_token)
 
       elif self.token_kind == Kind.Eof:
         if left_dq_token:
@@ -707,7 +727,7 @@ class WordParser(object):
     return dq_part
 
   def ReadDoubleQuoted(self, left_token, parts):
-    # type: (token, List[word_part_t]) -> token
+    # type: (Token, List[word_part_t]) -> Token
     """For expression mode.
     
     Read var x = "${dir:-}/$name"; etc.
@@ -756,7 +776,7 @@ class WordParser(object):
     elif left_id == Id.Left_Backtick:
       self._Next(lex_mode_e.Backtick)  # advance past `
 
-      parts = []
+      parts = []  # type: List[str]
       while True:
         self._Peek()
         #print(self.cur_token)
@@ -771,7 +791,7 @@ class WordParser(object):
           p_die('Unexpected EOF while looking for closing backtick',
                 token=left_token)
         else:
-          raise AssertionError
+          raise AssertionError(self.cur_token)
         self._Next(lex_mode_e.Backtick)
 
       # Calculate right SPID on CommandSub BEFORE re-parsing.
@@ -811,7 +831,7 @@ class WordParser(object):
     return node
 
   def ParseVarDecl(self, kw_token):
-    # type: (token) -> command_t
+    # type: (Token) -> command_t
     """
     oil_var_decl: name_type_list '=' testlist end_stmt
 
@@ -829,12 +849,12 @@ class WordParser(object):
       last_token.id = Id.Lit_RBrace
 
     # Let the CommandParser see the Op_Semi or Op_Newline.
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
     self._Next(lex_mode_e.ShCommand)  # always back to this
     return enode
 
   def ParsePlaceMutation(self, kw_token):
-    # type: (token) -> command_t
+    # type: (Token) -> command_t
     """
     setvar a[i] = 1
     setvar i += 1
@@ -848,7 +868,7 @@ class WordParser(object):
       last_token.id = Id.Lit_RBrace
 
     # Let the CommandParser see the Op_Semi or Op_Newline.
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
     self._Next(lex_mode_e.ShCommand)  # always back to this
     return enode
 
@@ -863,7 +883,7 @@ class WordParser(object):
                                                     grammar_nt.command_expr)
     if last_token.id == Id.Op_RBrace:
       last_token.id = Id.Lit_RBrace
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
     self._Next(lex_mode_e.ShCommand)
     return enode
 
@@ -873,7 +893,7 @@ class WordParser(object):
                                                     grammar_nt.command_expr)
     if last_token.id == Id.Op_RBrace:
       last_token.id = Id.Lit_RBrace
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
     return enode
 
   def ParseProc(self, node):
@@ -884,13 +904,15 @@ class WordParser(object):
     self._Peek()
     # example: 'proc f[' gets you Lit_ArrayLhsOpen
     if self.token_type != Id.Lit_Chars:
-      p_die('Invalid proc name %r', self.cur_token.val, token=self.cur_token)
+      p_die('Invalid proc name %s', ui.PrettyToken(self.cur_token, self.arena),
+            token=self.cur_token)
+
     node.name = self.cur_token
 
     last_token = self.parse_ctx.ParseProc(self.lexer, node)
     if last_token.id == Id.Op_LBrace:  # Translate to what CommandParser wants
       last_token.id = Id.Lit_LBrace
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
     self._Next(lex_mode_e.ShCommand)  # required
 
   def ParseFunc(self, node):
@@ -898,7 +920,7 @@ class WordParser(object):
     last_token = self.parse_ctx.ParseFunc(self.lexer, node)
     if last_token.id == Id.Op_LBrace:  # Translate to what CommandParser wants
       last_token.id = Id.Lit_LBrace
-    self.buffered_word = word.Token(last_token)
+    self.buffered_word = last_token
 
   def _ReadArithExpr(self):
     # type: () -> arith_expr_t
@@ -922,7 +944,7 @@ class WordParser(object):
     See the assertion in ArithParser.Parse() -- unexpected extra input.
     """
     # calls self.ReadWord(lex_mode_e.Arith)
-    a_parser = tdop.TdopParser(arith_parse.SPEC, self)
+    a_parser = tdop.TdopParser(arith_parse.Spec(), self)
     anode = a_parser.Parse()
     return anode
 
@@ -948,8 +970,7 @@ class WordParser(object):
     self._Next(lex_mode_e.Arith)
     anode = self._ReadArithExpr()
     if self.token_type != Id.Arith_RParen:
-      p_die('Expected first ) to end arith sub, got %r', self.cur_token.val,
-            token=self.cur_token)
+      p_die('Expected first ) to end arith sub', token=self.cur_token)
 
     self._Next(lex_mode_e.ShCommand)  # TODO: This could be DQ or ARITH too
 
@@ -957,8 +978,7 @@ class WordParser(object):
     # Two right parens break the Id.Eof_RParen scheme
     self._Peek()
     if self.token_type != Id.Right_DollarDParen:
-      p_die('Expected second ) to end arith sub, got %r', self.cur_token.val,
-            token=self.cur_token)
+      p_die('Expected second ) to end arith sub', token=self.cur_token)
 
     right_span_id = self.cur_token.span_id
 
@@ -966,12 +986,6 @@ class WordParser(object):
     node.spids.append(left_span_id)
     node.spids.append(right_span_id)
     return node
-
-  def _DollarBracketIsReserved(self):
-    # type: () -> word_part__ArithSub
-    """Non-standard arith sub $[a + 1]."""
-    left_span_id = self.cur_token.span_id
-    p_die('Use $(( instead of $[', token=self.cur_token)
 
   def ReadDParen(self):
     # type: () -> Tuple[arith_expr_t, int]
@@ -989,15 +1003,14 @@ class WordParser(object):
     anode = self._ReadArithExpr()
 
     if self.token_type != Id.Arith_RParen:
-      p_die('Expected first ) to end arith statement, got %r',
-            self.cur_token.val, token=self.cur_token)
+      p_die('Expected first ) to end arith statement', token=self.cur_token)
     self._Next(lex_mode_e.ShCommand)
 
     # PROBLEM: $(echo $(( 1 + 2 )) )
     self._Peek()
     if self.token_type != Id.Op_DRightParen:
-      p_die('Expected second ) to end arith statement, got %r',
-            self.cur_token.val, token=self.cur_token)
+      p_die('Expected second ) to end arith statement', token=self.cur_token)
+
     self._Next(lex_mode_e.ShCommand)
 
     return anode, self.cur_token.span_id
@@ -1018,32 +1031,35 @@ class WordParser(object):
 
     self._Peek()
     if self.token_type == Id.Arith_Semi:  # for (( ; i < 10; i++ ))
-      init_node = None
+      init_node = None  # type: Optional[arith_expr_t]
     else:
       init_node = self._ReadArithExpr()
     self._NextNonSpace()
 
     self._Peek()
     if self.token_type == Id.Arith_Semi:  # for (( ; ; i++ ))
-      cond_node = None
+      cond_node = None  # type: Optional[arith_expr_t]
     else:
       cond_node = self._ReadArithExpr()
     self._NextNonSpace()
 
     self._Peek()
     if self.token_type == Id.Arith_RParen:  # for (( ; ; ))
-      update_node = None
+      update_node = None  # type: Optional[arith_expr_t]
     else:
       update_node = self._ReadArithExpr()
     self._NextNonSpace()
 
     self._Peek()
     if self.token_type != Id.Arith_RParen:
-      p_die('Expected ) to end for loop expression, got %r',
-            self.cur_token.val, token=self.cur_token)
+      p_die('Expected ) to end for loop expression', token=self.cur_token)
     self._Next(lex_mode_e.ShCommand)
 
-    return command.ForExpr(init_node, cond_node, update_node)
+    node = command.ForExpr()
+    node.init = init_node
+    node.cond = cond_node
+    node.update = update_node
+    return node
 
   def _ReadArrayLiteral(self):
     # type: () -> word_part_t
@@ -1067,57 +1083,58 @@ class WordParser(object):
     self._Next(lex_mode_e.ShCommand)  # advance past (
     self._Peek()
     if self.cur_token.id != Id.Op_LParen:
-      p_die('Expected ( after =, got %r', self.cur_token.val,
-            token=self.cur_token)
+      p_die('Expected ( after =', token=self.cur_token)
     left_token = self.cur_token
     paren_spid = self.cur_token.span_id
 
     # MUST use a new word parser (with same lexer).
     w_parser = self.parse_ctx.MakeWordParser(self.lexer, self.line_reader)
-    words = []
+    words = []  # type: List[compound_word]
     while True:
       w = w_parser.ReadWord(lex_mode_e.ShCommand)
-
-      if isinstance(w, word__Token):
-        word_id = word_.CommandId(w)
-        if word_id == Id.Right_ShArrayLiteral:
+      if w.tag_() == word_e.Token:
+        tok = cast(Token, w)
+        if tok.id == Id.Right_ShArrayLiteral:
           break
         # Unlike command parsing, array parsing allows embedded \n.
-        elif word_id == Id.Op_Newline:
+        elif tok.id == Id.Op_Newline:
           continue
         else:
           # Token
-          p_die('Unexpected token in array literal: %r', w.token.val, word=w)
+          p_die('Unexpected token in array literal', word=w)
 
-      assert isinstance(w, word__Compound)  # for MyPy
-      words.append(w)
+      words.append(cast(compound_word, w))
 
-    if not words:  # a=() is empty indexed array
-      # ignore for invariant List?
-      node = sh_array_literal(left_token, words)  # type: ignore
+    if len(words) == 0:  # a=() is empty indexed array
+      # Needed for type safety, doh
+      no_words = []  # type: List[word_t]
+      node = sh_array_literal(left_token, no_words)
       node.spids.append(left_token.span_id)
       return node
  
     # If the first one is a key/value pair, then the rest are assumed to be.
     pair = word_.DetectAssocPair(words[0])
     if pair:
-      pairs = [pair[0], pair[1]]  # flat representation
+      k, v = pair
+      pairs = [k, v]
 
       n = len(words)
       for i in xrange(1, n):
-        w = words[i]
-        pair = word_.DetectAssocPair(w)
+        w2 = words[i]
+        pair = word_.DetectAssocPair(w2)
         if not pair:
-          p_die("Expected associative array pair", word=w)
+          p_die("Expected associative array pair", word=w2)
 
-        pairs.append(pair[0])  # flat representation
-        pairs.append(pair[1])
+        k, v = pair
+        pairs.append(k)  # flat representation
+        pairs.append(v)
 
       # invariant List?
-      node = word_part.AssocArrayLiteral(left_token, pairs)  # type: ignore
-      node.spids.append(paren_spid)
-      return node
+      node2 = word_part.AssocArrayLiteral(left_token, pairs)
+      node2.spids.append(paren_spid)
+      return node2
 
+    # Brace detection for arrays but NOT associative arrays
     words2 = braces.BraceDetectAll(words)
     words3 = word_.TildeDetectAll(words2)
     node = sh_array_literal(left_token, words3)
@@ -1135,11 +1152,12 @@ class WordParser(object):
     # Call into expression language.
     self.parse_ctx.ParseOilArgList(self.lexer, arglist)
 
-  KINDS_THAT_END_WORDS = (Kind.Eof, Kind.WS, Kind.Op, Kind.Right)
+  def _ReadCompoundWord(self, lex_mode):
+    # type: (lex_mode_t) -> compound_word
+    return self._ReadCompoundWord3(lex_mode, Id.Undefined_Tok, True)
 
-  def _ReadCompoundWord(self, eof_type=Id.Undefined_Tok,
-                        lex_mode=lex_mode_e.ShCommand, empty_ok=True):
-    # type: (Id_t, lex_mode_t, bool) -> word__Compound
+  def _ReadCompoundWord3(self, lex_mode, eof_type, empty_ok):
+    # type: (lex_mode_t, Id_t, bool) -> compound_word
     """
     Precondition: Looking at the first token of the first word part
     Postcondition: Looking at the token after, e.g. space or operator
@@ -1148,7 +1166,7 @@ class WordParser(object):
     could be an operator delimiting a compound word.  Can we change lexer modes
     and remove this special case?
     """
-    w = word.Compound()
+    w = compound_word()
     num_parts = 0
     brace_count = 0
     done = False
@@ -1166,14 +1184,14 @@ class WordParser(object):
         if self.token_type == Id.Lit_EscapedChar:
           part = word_part.EscapedLiteral(self.cur_token)  # type: word_part_t
         else:
-          part = word_part.Literal(self.cur_token)
+          part = self.cur_token
 
         if self.token_type == Id.Lit_VarLike and num_parts == 0:  # foo=
           w.parts.append(part)
           # Unfortunately it's awkward to pull the check for a=(1 2) up to
           # _ReadWord.
-          t = self.lexer.LookAhead(lex_mode_e.ShCommand)
-          if t.id == Id.Op_LParen:
+          next_id = self.lexer.LookAhead(lex_mode_e.ShCommand)
+          if next_id == Id.Op_LParen:
             self.lexer.PushHint(Id.Op_RParen, Id.Right_ShArrayLiteral)
             part2 = self._ReadArrayLiteral()
             w.parts.append(part2)
@@ -1182,18 +1200,18 @@ class WordParser(object):
             self._Next(lex_mode)
             self._Peek()
             # EOF, whitespace, newline, Right_Subshell
-            if self.token_kind not in self.KINDS_THAT_END_WORDS:
+            if self.token_kind not in KINDS_THAT_END_WORDS:
               p_die('Unexpected token after array literal',
                     token=self.cur_token)
             done = True
 
-        elif (self.parse_opts.at and self.token_type == Id.Lit_Splice and
+        elif (self.parse_opts.parse_at and self.token_type == Id.Lit_Splice and
               num_parts == 0):
 
           splice_token = self.cur_token
 
-          t = self.lexer.LookAhead(lex_mode_e.ShCommand)
-          if t.id == Id.Op_LParen:  # @arrayfunc(x)
+          next_id = self.lexer.LookAhead(lex_mode_e.ShCommand)
+          if next_id == Id.Op_LParen:  # @arrayfunc(x)
             arglist = arg_list()
             self._ParseCallArguments(arglist)
             part = word_part.FuncCall(splice_token, arglist)
@@ -1206,7 +1224,7 @@ class WordParser(object):
           self._Next(lex_mode)
           self._Peek()
           # EOF, whitespace, newline, Right_Subshell
-          if self.token_kind not in self.KINDS_THAT_END_WORDS:
+          if self.token_kind not in KINDS_THAT_END_WORDS:
             p_die('Unexpected token after array splice',
                   token=self.cur_token)
           done = True
@@ -1231,8 +1249,8 @@ class WordParser(object):
           #   but "--name=$f(x)" not allowed?  This would BREAK EXISTING CODE.
           #   It would need a parse option.
 
-          t = self.lexer.LookAhead(lex_mode_e.ShCommand)
-          if t.id == Id.Op_LParen:
+          next_id = self.lexer.LookAhead(lex_mode_e.ShCommand)
+          if next_id == Id.Op_LParen:
             arglist = arg_list()
             self._ParseCallArguments(arglist)
             part = word_part.FuncCall(vsub_token, arglist)
@@ -1261,7 +1279,8 @@ class WordParser(object):
         #  pass
         elif self.token_type == Id.Right_Subshell:
           # LEXER HACK for (case x in x) ;; esac )
-          assert self.next_lex_mode is None  # Rewind before it's used
+          # Rewind before it's used
+          assert self.next_lex_mode == lex_mode_e.Undefined
           if self.lexer.MaybeUnreadOne():
             self.lexer.PushHint(Id.Op_RParen, Id.Right_Subshell)
             self._Next(lex_mode)
@@ -1281,7 +1300,8 @@ class WordParser(object):
         # We get Id.Op_RParen at top level:      case x in x) ;; esac
         # We get Id.Eof_RParen inside ComSub:  $(case x in x) ;; esac )
         if self.token_type in (Id.Op_RParen, Id.Eof_RParen):
-          assert self.next_lex_mode is None  # Rewind before it's used
+          # Rewind before it's used
+          assert self.next_lex_mode == lex_mode_e.Undefined
           if self.lexer.MaybeUnreadOne():
             if self.token_type == Id.Eof_RParen:
               # Redo translation
@@ -1294,7 +1314,7 @@ class WordParser(object):
         self._Next(lex_mode)
         num_parts += 1
 
-    if self.parse_opts.brace and num_parts > 1 and brace_count != 0:
+    if self.parse_opts.parse_brace and num_parts > 1 and brace_count != 0:
       # accept { and }, but not foo{
       p_die(
           'Word has unbalanced { }.  Maybe add a space or quote it like \{',
@@ -1303,7 +1323,7 @@ class WordParser(object):
     return w
 
   def _ReadArithWord(self):
-    # type: () -> Tuple[word_t, bool]
+    # type: () -> Tuple[Optional[word_t], bool]
     """Helper function for ReadWord."""
     self._Peek()
 
@@ -1312,32 +1332,29 @@ class WordParser(object):
 
     elif self.token_kind == Kind.Eof:
       # Just return EOF token
-      w = word.Token(self.cur_token)  # type: word_t
-      return w, False
+      return cast(word_t, self.cur_token), False
 
     elif self.token_kind == Kind.Ignored:
       # Space should be ignored.  TODO: change this to SPACE_SPACE and
       # SPACE_NEWLINE?  or SPACE_TOK.
       self._Next(lex_mode_e.Arith)
-      return None, True  # Tell wrapper to try again
+      no_word = None  # type: Optional[word_t]
+      return no_word, True  # Tell wrapper to try again
 
     elif self.token_kind in (Kind.Arith, Kind.Right):
       # Id.Right_DollarDParen IS just a normal token, handled by ArithParser
       self._Next(lex_mode_e.Arith)
-      w = word.Token(self.cur_token)
-      return w, False
+      return cast(word_t, self.cur_token), False
 
     elif self.token_kind in (Kind.Lit, Kind.Left, Kind.VSub):
-      w = self._ReadCompoundWord(lex_mode=lex_mode_e.Arith)
-      return w, False
+      w = self._ReadCompoundWord(lex_mode_e.Arith)
+      return cast(word_t, w), False
 
     else:
-      assert False, ("Unexpected token parsing arith sub: %s" % self.cur_token)
-
-    raise AssertionError("Shouldn't get here")
+      raise AssertionError(self.cur_token)
 
   def _ReadWord(self, lex_mode):
-    # type: (lex_mode_t) -> Tuple[word_t, bool]
+    # type: (lex_mode_t) -> Tuple[Optional[word_t], bool]
     """Helper function for Read().
 
     Returns:
@@ -1345,20 +1362,22 @@ class WordParser(object):
         word: Word, or None if there was an error, or need_more is set
         need_more: True if the caller should call us again
     """
+    no_word = None  # type: Optional[word_t]
+
     self._Peek()
 
     if self.token_kind == Kind.Eof:
       # No advance
-      return word.Token(self.cur_token), False
+      return cast(word_t, self.cur_token), False
 
     # Allow Arith for ) at end of for loop?
     elif self.token_kind in (Kind.Op, Kind.Redir, Kind.Arith):
       self._Next(lex_mode)
       if self.token_type == Id.Op_Newline:
         if self.cursor_was_newline:
-          return None, True
+          return no_word, True
 
-      return word.Token(self.cur_token), False
+      return cast(word_t, self.cur_token), False
 
     elif self.token_kind == Kind.Right:
       if self.token_type not in (
@@ -1367,11 +1386,11 @@ class WordParser(object):
         raise AssertionError(self.cur_token)
 
       self._Next(lex_mode)
-      return word.Token(self.cur_token), False
+      return cast(word_t, self.cur_token), False
 
     elif self.token_kind in (Kind.Ignored, Kind.WS):
       self._Next(lex_mode)
-      return None, True  # tell Read() to try again
+      return no_word, True  # tell Read() to try again
 
     elif self.token_kind in (
         Kind.VSub, Kind.Lit, Kind.History, Kind.Left, Kind.KW,
@@ -1389,17 +1408,15 @@ class WordParser(object):
 
         # The next iteration will go into Kind.Ignored and set lex state to
         # lex_mode_e.ShCommand/etc.
-        return None, True  # tell Read() to try again after comment
+        return no_word, True  # tell Read() to try again after comment
 
       else:
-        w = self._ReadCompoundWord(lex_mode=lex_mode)
-        return w, False
+        w = self._ReadCompoundWord(lex_mode)
+        return cast(word_t, w), False
 
     else:
       raise AssertionError(
           'Unhandled: %s (%s)' % (self.cur_token, self.token_kind))
-
-    raise AssertionError("Shouldn't get here")
 
   def LookAhead(self):
     # type: () -> Id_t
@@ -1410,10 +1427,9 @@ class WordParser(object):
     """
     assert self.token_type != Id.Undefined_Tok
     if self.cur_token.id == Id.WS_Space:
-      t = self.lexer.LookAhead(lex_mode_e.ShCommand)
+      return self.lexer.LookAhead(lex_mode_e.ShCommand)
     else:
-      t = self.cur_token
-    return t.id
+      return self.cur_token.id
 
   def ReadWord(self, lex_mode):
     # type: (lex_mode_t) -> word_t
@@ -1457,12 +1473,12 @@ class WordParser(object):
     # Returns nothing
 
   def ReadForPlugin(self):
-    # type: () -> word__Compound
+    # type: () -> compound_word
     """For $PS1, $PS4, etc.
 
     This is just like reading a here doc line.  "\n" is allowed, as well as the
     typical substitutions ${x} $(echo hi) $((1 + 2)).
     """
-    w = word.Compound()
+    w = compound_word()
     self._ReadLikeDQ(None, w.parts)
     return w

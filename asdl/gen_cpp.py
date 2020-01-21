@@ -10,10 +10,6 @@ TODO:
 - pretty printing methods
   - so asdl/format.py get translated?
 
-- ASDL optional args to C++ default arguments?
-- what about spids?  optional?
-  - TODO: test this out in target_lang.cc
-
 - NoOp needs to be instantiated without args?
 - dict becomes Dict[str, str] ?
 - how to handle UserType(id) ?
@@ -196,7 +192,8 @@ class ClassDefVisitor(visitor.AsdlVisitor):
 
     # This is the base class.
     Emit('class %(sum_name)s_t {')
-    # Can't be constructed directly
+    # Can't be constructed directly.  Note: this shows up in uftrace in debug
+    # mode, e.g. when we intantiate Token.  Do we need it?
     Emit(' protected:')
     Emit('  %s_t() {}' % sum_name)
     Emit(' public:')
@@ -233,6 +230,28 @@ class ClassDefVisitor(visitor.AsdlVisitor):
     Emit('}')
     Emit('')
 
+  def _DefaultValue(self, field):
+    if field.seq:  # Array
+      default = 'new List<%s>()' % _GetInnerCppType(self.type_lookup, field)
+    else:
+      if field.type == 'int':
+        default = '-1'
+      elif field.type == 'id':  # hard-coded HACK
+        default = '-1'
+      elif field.type == 'bool':
+        default = 'false'
+      elif field.type == 'string':
+        default = 'new Str("")'
+      else:
+        field_desc = self.type_lookup[field.type]
+        if isinstance(field_desc, meta.SumType) and field_desc.is_simple:
+          # Just make it the first variant.  We could define "Undef" for
+          # each enum, but it doesn't seem worth it.
+          default = '%s_e::%s' % (field.type, field_desc.simple_variants[0])
+        else:
+          default = 'nullptr'
+    return default
+
   def _GenClass(self, desc, attributes, class_name, base_classes, depth, tag):
     """For Product and Constructor."""
     if base_classes:
@@ -248,26 +267,7 @@ class ClassDefVisitor(visitor.AsdlVisitor):
     if desc.fields:  # Don't emit for constructors with no fields
       default_inits = [tag_init]
       for field in all_fields:
-        if field.seq:  # Array
-          default = 'new List<%s>()' % _GetInnerCppType(self.type_lookup, field)
-        else:
-          if field.type == 'int':
-            default = '-1'
-          elif field.type == 'id':  # hard-coded HACK
-            default = '-1'
-          elif field.type == 'bool':
-            default = 'false'
-          elif field.type == 'string':
-            default = 'new Str("")'
-          else:
-            field_desc = self.type_lookup[field.type]
-            if isinstance(field_desc, meta.SumType) and field_desc.is_simple:
-              # Just make it the first variant.  We could define "Undef" for
-              # each enum, but it doesn't seem worth it.
-              default = '%s_e::%s' % (field.type, field_desc.simple_variants[0])
-            else:
-              default = 'nullptr'
-
+        default = self._DefaultValue(field)
         default_inits.append('%s(%s)' % (field.name, default))
 
       # Constructor with ZERO args
@@ -282,12 +282,17 @@ class ClassDefVisitor(visitor.AsdlVisitor):
     for f in desc.fields:
       params.append('%s %s' % (self._GetCppType(f), f.name))
       inits.append('%s(%s)' % (f.name, f.name))
+    for f in attributes:  # spids are initialized separately
+      inits.append('%s(%s)' % (f.name, self._DefaultValue(f)))
 
     # Constructor with N args
     self.Emit("  %s(%s) : %s {" %
         (class_name, ', '.join(params), ', '.join(inits)), depth)
     self.Emit("  }")
 
+    #
+    # Members
+    #
     self.Emit('  uint16_t tag;')
     for field in all_fields:
       self.Emit("  %s %s;" % (self._GetCppType(field), field.name))
@@ -382,7 +387,7 @@ class MethodDefVisitor(visitor.AsdlVisitor):
     if field.seq:
       iter_name = 'i%d' % counter
 
-      self.Emit('  if (this->%s) {  // ArrayType' % field.name)
+      self.Emit('  if (this->%s && len(this->%s)) {  // ArrayType' % (field.name, field.name))
       self.Emit('    hnode__Array* %s = new hnode__Array(new List<hnode_t*>());' % out_val_name)
       item_type = _GetInnerCppType(self.type_lookup, field)
       self.Emit('    for (ListIter<%s>it(this->%s); !it.Done(); it.Next()) {'

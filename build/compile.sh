@@ -134,7 +134,15 @@ readonly PREPROC_FLAGS=(
 # NOTE: build/oil-defs is hard-coded to the oil.ovm app.  We're abandoning
 # hello.ovm and opy.ovm for now, but those can easily be added later.  We
 # haven't mangled the CPython source!
-readonly INCLUDE_PATHS=(-I . -I Include -I ../_devbuild/gen -I ../build/oil-defs)
+readonly INCLUDE_PATHS=(
+  -I .
+  -I Include
+  -I ../_devbuild/gen
+  -I ../build/oil-defs
+  -I ../py-yajl
+   # Note: This depends on build/dev.sh yajl-release
+  -I ../py-yajl/yajl/yajl-2.1.1/include
+)
 readonly CC=${CC:-cc}  # cc should be on POSIX systems
 
 # BASE_CFLAGS is copied by observation from what configure.ac does on my Ubuntu
@@ -359,6 +367,7 @@ make-tar() {
     INSTALL.txt \
     configure \
     install \
+    uninstall \
     Makefile \
     doc/osh.1 \
     build/compile.sh \
@@ -367,6 +376,7 @@ make-tar() {
     build/detect-*.c \
     _build/$app_name/$bytecode_zip \
     _build/$app_name/*.c \
+    py-yajl/yajl/COPYING \
     $PY27/LICENSE \
     $PY27/Modules/ovm.c \
     $c_module_srcs \
@@ -406,4 +416,6 @@ count-c-lines() {
   popd
 }
 
-"$@"
+if test $(basename $0) = 'compile.sh'; then
+  "$@"
+fi

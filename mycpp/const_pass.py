@@ -4,6 +4,8 @@ const_pass.py - AST pass that collects constants.
 Immutable string constants like 'new Str("foo")' are moved to the top level of
 the generated C++ program for efficiency.
 """
+import json
+
 from typing import overload, Union, Optional, Any, Dict, List
 
 from mypy.visitor import ExpressionVisitor, StatementVisitor
@@ -15,6 +17,8 @@ from mypy.types import Type
 
 from crash import catch_errors
 from util import log
+
+import format_strings
 
 
 T = None  # TODO: Make it type check?
@@ -75,8 +79,9 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
                 return None
 
     def log(self, msg, *args):
-      ind_str = self.indent * '  '
-      log(ind_str + msg, *args)
+      if 0:  # quiet
+        ind_str = self.indent * '  '
+        log(ind_str + msg, *args)
 
     # Not in superclasses:
 
@@ -109,19 +114,10 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
     def visit_str_expr(self, o: 'mypy.nodes.StrExpr') -> T:
         # - Need new Str() everywhere because "foo" doesn't match Str* :-(
 
-        #import json
-
-        # TODO: Python strings are not C strings?  But MyPy seems to double the
-        # \ for you, so I can't use json.dumps()
-        #
-        # For ", you get '"'
-        # For \, you get '\\\\' for some reason?
-
-        # HACK.  Figure out the right thing.
-        c_string = o.value.replace('"', '\\"')
-
         id_ = 'str%d' % self.unique_id
-        self.out('Str* %s = new Str("%s");', id_, c_string)
+        raw_string = format_strings.DecodeMyPyString(o.value)
+
+        self.out('Str* %s = new Str(%s);', id_, json.dumps(raw_string))
         self.unique_id += 1
         self.const_lookup[o] = id_
 
@@ -310,6 +306,8 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
               self.log('  lval %s :: %s', lval, self.types[lval])
             except KeyError:  # TODO: handle this
               pass
+            self.accept(lval)
+
           try:
             r = self.types[o.rvalue]
           except KeyError:
@@ -336,10 +334,10 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
           raise AssertionError("can't translate for-else")
 
     def visit_with_stmt(self, o: 'mypy.nodes.WithStmt') -> T:
-        pass
+        self.accept(o.body)
 
     def visit_del_stmt(self, o: 'mypy.nodes.DelStmt') -> T:
-        pass
+        self.accept(o.expr)
 
     def visit_func_def(self, o: 'mypy.nodes.FuncDef') -> T:
         # got the type here, nice!
@@ -353,6 +351,10 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
 
         self.indent += 1
         for arg in o.arguments:
+          # e.g. foo=''
+          if arg.initializer:
+            self.accept(arg.initializer)
+
           # We can't use __str__ on these Argument objects?  That seems like an
           # oversight
           #self.log('%r', arg)
@@ -497,10 +499,10 @@ class Collect(ExpressionVisitor[T], StatementVisitor[None]):
         for t, v, handler in zip(o.types, o.vars, o.handlers):
           self.accept(handler)
 
-        if o.else_body:
-          raise AssertionError('try/else not supported')
-        if o.finally_body:
-          raise AssertionError('try/finally not supported')
+        #if o.else_body:
+        #  raise AssertionError('try/else not supported')
+        #if o.finally_body:
+        #  raise AssertionError('try/finally not supported')
 
     def visit_print_stmt(self, o: 'mypy.nodes.PrintStmt') -> T:
         pass

@@ -55,7 +55,7 @@ Here's a longer example:
     $ var D = / digit{1,3} /
 
     # Use the subpattern
-    $ var ip_pat = / @D '.' @D '.' @D '.' @D /
+    $ var ip_pat = / D '.' D '.' D '.' D /
 
     # This eggex compiles to an ERE
     $ echo $ip_pat
@@ -81,12 +81,12 @@ TODO: You should also be able to inline patterns like this:
 
 Eggexes have a consistent syntax:
 
-- Single characters are unadorned: `dot`, `space`, or `s`
+- Single characters are unadorned, in lowercase: `dot`, `space`, or `s`
 - A sequence of multiple characters looks like `'lit'`, `$var`, etc.
 - Constructs that match **zero** characters look like `%start %end` 
-- Entire subpatterns (which may contain alternation, repetition, etc.) look
-  like `@var_name`.  Important: these are **spliced** as syntax trees, not
-  strings, so you **don't** need to think about quoting.
+- Entire subpatterns (which may contain alternation, repetition, etc.) are in
+  uppercase like `HexDigit`.  Important: these are **spliced** as syntax trees,
+  not strings, so you **don't** need to think about quoting.
 
 For example, it's easy to see that these patterns all match **three** characters:
 
@@ -103,10 +103,10 @@ And that these patterns match **two**:
     / %start 'if' /
     / d d %end /
 
-And that you have to look up the definition of `D` to know how many characters
-this matches:
+And that you have to look up the definition of `HexDigit` to know how many
+characters this matches:
 
-    / %start @D %end /
+    / %start HexDigit %end /
 
 Constructs like `. ^ $ \< \>` are deprecated because they break these rules.
 
@@ -200,13 +200,16 @@ In contrast, regexes have many confusing syntaxes for negation:
 
     /\w/-i vs /\w/i
 
-### Splice Other Patterns With @
+### Splice Other Patterns With Uppercase Names
 
-New in Eggex!  You can reuse patterns with `@pattern_name`.
+New in Eggex!  You can reuse patterns with `PatternName`.
 
 See the example at the front of this document.
 
 This is similar to how `lex` and `re2c` work.
+
+If the host language discourages uppercase identifiers, use `@pattern_name`
+instead.
 
 ### Group and Capture With `()` and `<>`
 
@@ -219,11 +222,11 @@ See note below: POSIX ERE has no non-capturing groups.
 
 Capture with `<pat>`:
 
-    < d+ >+        # Becomes M.group(1)
+    < d+ >        # Becomes M.group(1)
 
-Add a variable after `=` for named capture:
+Add a variable after `:` for named capture:
 
-    < d+ = myvar>  # Becomes M.group('myvar')
+    < d+ : myvar>  # Becomes M.group('myvar')
 
 ### Character Class Literals Use `[]`
 
@@ -376,12 +379,13 @@ Yes:
     <'foo'>+
     <$string_with_many_chars>+
 
-This is necessar because:
+This is necessary because ERE doesn't have non-capturing groups like Perl's
+`(?:...)`, and - Eggex only does "dumb" translations.  It doesn't silently
+insert constructs that change the meaning of the pattern.
 
-- ERE doesn't have non-capturing groups like Perl's `(?:...)`
-- Eggex only does "dumb" translations.  It doesn't silently insert constructs
-  that change the meaning of the pattern.
-
+(Exception: Although `('foo')+` is a non-capturing group, it becomes a capturing
+group when translating to ERE.  This is for convenience / familiarity.  Prefer
+`<'foo'>+`.)
 
 ### Unicode Char Literals Can't Be Used In Char Class Literals
 

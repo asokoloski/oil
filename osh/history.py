@@ -8,11 +8,17 @@ from __future__ import print_function
 import sys
 
 from _devbuild.gen.id_kind_asdl import Id
+from core import error
 from core import util
 #from core.util import log
-from frontend.match import HISTORY_LEXER
+from frontend import match
 from frontend import reader
 from osh import word_
+
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+  from frontend.parse_lib import ParseContext
+  from core.util import DebugFile
 
 
 class Evaluator(object):
@@ -25,17 +31,19 @@ class Evaluator(object):
   """
 
   def __init__(self, readline_mod, parse_ctx, debug_f):
+    # type: (Any, ParseContext, DebugFile) -> None
     self.readline_mod = readline_mod
     self.parse_ctx = parse_ctx
     self.debug_f = debug_f
 
   def Eval(self, line):
+    # type: (str) -> str
     """Returns an expanded line."""
 
     if not self.readline_mod:
       return line
 
-    tokens = list(HISTORY_LEXER.Tokens(line))
+    tokens = match.HistoryTokens(line)
     # Common case: no history expansion.
     if all(id_ == Id.History_Other for (id_, _) in tokens):
       return line
@@ -63,7 +71,7 @@ class Evaluator(object):
           c_parser = self.parse_ctx.MakeOshParser(line_reader)
           try:
             c_parser.ParseLogicalLine()
-          except util.ParseError as e:
+          except error.Parse as e:
             #from core import ui
             #ui.PrettyPrintError(e, self.parse_ctx.arena)
 
@@ -138,7 +146,7 @@ class Evaluator(object):
 
         # Search backward
         prefix = None
-        substring = None
+        substring = ''
         if val[1] == '?':
           substring = val[2:]
         else:
@@ -149,7 +157,7 @@ class Evaluator(object):
           cmd = self.readline_mod.get_history_item(i)
           if prefix and cmd.startswith(prefix):
             out = cmd
-          if substring and substring in cmd:
+          if len(substring) and substring in cmd:
             out = cmd
           if out is not None:
             out += last_char  # restore required space

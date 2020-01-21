@@ -30,6 +30,7 @@ install:
     - pip install --user flake8 typing
     # mypy requires Python 3
     - pip3 install --user mypy
+    # hack for cmark
     - build/dev.sh minimal
 
 script:
@@ -39,9 +40,11 @@ script:
     - types/run.sh travis
     - types/osh-parse.sh travis
     # Unit tests
-    - test/unit.sh all
+    - test/unit.sh all-for-minimal
     # Spec tests
     - test/spec.sh smoke
+    # Make sure dev build of yajl works
+    - test/spec.sh oil-json
     - test/spec.sh interactive
     # TODO: get other spec tests running on Travis.
     # - test/spec.sh all

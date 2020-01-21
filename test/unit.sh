@@ -43,13 +43,23 @@ banner() {
   echo -----
 }
 
+readonly -a UNIT_TESTS=( {asdl,build,core,doctools,frontend,lazylex,mycpp,native,oil_lang,osh,pylib,test,tools}/*_test.py )
+
 tests-to-run() {
-  # TODO: Add opy.
-  for t in {build,test,native,asdl,core,oil_lang,osh,frontend,pylib,ovm2,test,tools}/*_test.py; do
+  local minimal=${1:-}
+
+  # TODO: Add doctools which libcmark*.so is automated
+  for t in "${UNIT_TESTS[@]}"; do
     # For Travis after build/dev.sh minimal: if we didn't build fastlex.so,
     # then skip a unit test that will fail.
-    if test $t = 'native/fastlex_test.py' && ! test -e 'fastlex.so'; then
-      continue
+
+    if test -n "$minimal"; then
+      if test $t = 'native/fastlex_test.py' && ! test -e 'fastlex.so'; then
+        continue
+      fi
+      if test $t = 'doctools/cmark_test.py' && ! test -e 'cmark.so'; then
+        continue
+      fi
     fi
 
     echo $t
@@ -73,9 +83,13 @@ run-test-and-maybe-abort() {
 all() {
   # For testing
   #export FASTLEX=0
-  time tests-to-run | xargs -n 1 -- $0 run-test-and-maybe-abort
+  time tests-to-run "$@" | xargs -n 1 -- $0 run-test-and-maybe-abort
   echo
   echo "All unit tests passed."
+}
+
+all-for-minimal() {
+  all minimal
 }
 
 # Run all unit tests in one process.
@@ -149,8 +163,6 @@ run-all-and-log() {
 }
 
 
-source benchmarks/common.sh
-
 # TODO: It would be nice to have timestamps of the underlying CSV files and
 # timestamp of running the report.  This is useful for benchmarks too.
 
@@ -158,25 +170,23 @@ print-report() {
   local in_dir=${1:-_tmp/unit}
   local base_url='../../web'
 
+  html-head --title 'Oil Unit Test Results' \
+    "$base_url/table/table-sort.js" \
+    "$base_url/table/table-sort.css" \
+    "$base_url/base.css" \
+    "$base_url/benchmarks.css" 
+
   # NOTE: Using benchmarks for now.
   cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>Unit Test Results</title>
-    <script type="text/javascript" src="$base_url/table/table-sort.js"></script>
-    <link rel="stylesheet" type="text/css" href="$base_url/table/table-sort.css" />
-    <link rel="stylesheet" type="text/css" href="$base_url/benchmarks.css" />
-
-  </head>
-  <body>
+  <body class="width40">
     <p id="home-link">
       <a href="/">oilshell.org</a>
     </p>
     <h2>Unit Test Results</h2>
 
 EOF
-  csv2html $in_dir/report.csv
+
+  web/table/csv2html.py $in_dir/report.csv
 
   cat <<EOF
   </body>

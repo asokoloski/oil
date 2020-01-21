@@ -6,6 +6,9 @@ from __future__ import print_function
 import sys
 
 import libc
+from typing import Any, List, Optional, Dict, IO, TYPE_CHECKING
+if TYPE_CHECKING:
+  from core.util import DebugFile
 
 _RESET = '\033[0;0m'
 _BOLD = '\033[1m'
@@ -23,13 +26,16 @@ _CYAN = '\033[36m'
 #
 # Readline understands \x01 and \x02, while bash understands \[ and \].
 
-PROMPT_BOLD = '\x01%s\x02' % _BOLD
-PROMPT_RESET = '\x01%s\x02' % _RESET
-PROMPT_UNDERLINE = '\x01%s\x02' % _UNDERLINE
-PROMPT_REVERSE = '\x01%s\x02' % _REVERSE
+# NOTE: There were used in demoish.py.  Do we still want those styles?
+if 0:
+  PROMPT_BOLD = '\x01%s\x02' % _BOLD
+  PROMPT_RESET = '\x01%s\x02' % _RESET
+  PROMPT_UNDERLINE = '\x01%s\x02' % _UNDERLINE
+  PROMPT_REVERSE = '\x01%s\x02' % _REVERSE
 
 
 def _PromptLen(prompt_str):
+  # type: (str) -> int
   """Ignore all characters between \x01 and \x02 and handle unicode characters.
   In particular, the display width of a string may be different from either the
   number of bytes or the number of unicode characters.
@@ -58,10 +64,12 @@ class PromptState(object):
   """For the InteractiveLineReader to communicate with the Display callback."""
 
   def __init__(self):
-    self.last_prompt_str = None
+    # type: () -> None
+    self.last_prompt_str = None  # type: Optional[str]
     self.last_prompt_len = -1
 
   def SetLastPrompt(self, prompt_str):
+    # type: (str) -> None
     self.last_prompt_str = prompt_str
     self.last_prompt_len = _PromptLen(prompt_str)
 
@@ -70,19 +78,22 @@ class State(object):
   """For the RootCompleter to communicate with the Display callback."""
 
   def __init__(self):
+    # type: () -> None
     self.line_until_tab = None  # original line, truncated
 
     # Start offset in EVERY candidate to display.  We send fully-completed
     # LINES to readline because we don't want it to do its own word splitting.
     self.display_pos = -1
 
-    self.descriptions = {}  # completion candidate descriptions
+    # completion candidate descriptions
+    self.descriptions = {}  # type: Dict[str, str]
 
 
 class _IDisplay(object):
   """Interface for completion displays."""
 
   def __init__(self, comp_state, prompt_state, num_lines_cap, f, debug_f):
+    # type: (State, PromptState, int, IO[bytes], DebugFile) -> None
     self.comp_state = comp_state
     self.prompt_state = prompt_state
     self.num_lines_cap = num_lines_cap
@@ -90,6 +101,7 @@ class _IDisplay(object):
     self.debug_f = debug_f
 
   def PrintCandidates(self, *args):
+    # type: (*Any) -> None
     try:
       self._PrintCandidates(*args)
     except Exception as e:
@@ -97,27 +109,37 @@ class _IDisplay(object):
         import traceback
         traceback.print_exc()
 
+  def _PrintCandidates(self, unused_subst, matches, unused_match_len):
+    # type: (Optional[Any], List[str], Optional[Any]) -> None
+    """Abstract method."""
+    raise NotImplementedError()
 
   def Reset(self):
+    # type: () -> None
     """Call this in between commands."""
     pass
 
   def ShowPromptOnRight(self, rendered):
+    # type: (str) -> None
     # Doesn't apply to MinimalDisplay
     pass
 
   def EraseLines(self):
+    # type: () -> None
     # Doesn't apply to MinimalDisplay
     pass
 
   def PrintRequired(self, msg, *args):
+    # type: (str, *Any) -> None
     # This gets called with "nothing to display"
     pass
 
   def PrintOptional(self, msg, *args):
+    # type: (str, *Any) -> None
     pass
 
   def OnWindowChange(self):
+    # type: () -> None
     # MinimalDisplay doesn't care about terminal width.
     pass
 
@@ -131,18 +153,21 @@ class MinimalDisplay(_IDisplay):
   """
   def __init__(self, comp_state, prompt_state, debug_f, num_lines_cap=10,
                f=sys.stdout):
+    # type: (State, PromptState, DebugFile, int, IO[bytes]) -> None
     _IDisplay.__init__(self, comp_state, prompt_state, num_lines_cap, f,
                        debug_f)
 
     self.reader = None
 
   def _RedrawPrompt(self):
+    # type: () -> None
     # NOTE: This has to reprint the prompt and the command line!
     # Like bash, we SAVE the prompt and print it, rather than re-evaluating it.
     self.f.write(self.prompt_state.last_prompt_str)
     self.f.write(self.comp_state.line_until_tab)
 
   def _PrintCandidates(self, unused_subst, matches, unused_match_len):
+    # type: (Optional[Any], List[str], Optional[Any]) -> None
     #log('_PrintCandidates %s', matches)
     self.f.write('\n')  # need this
     display_pos = self.comp_state.display_pos
@@ -168,6 +193,7 @@ class MinimalDisplay(_IDisplay):
     self._RedrawPrompt()
 
   def PrintRequired(self, msg, *args):
+    # type: (str, *Any) -> None
     self.f.write('\n')
     if args:
       msg = msg % args
@@ -176,6 +202,7 @@ class MinimalDisplay(_IDisplay):
 
 
 def _PrintPacked(matches, max_match_len, term_width, max_lines, f):
+  # type: (List[str], int, int, int, IO[bytes]) -> int
   # With of each candidate.  2 spaces between each.
   w = max_match_len + 2
 
@@ -224,7 +251,14 @@ def _PrintPacked(matches, max_match_len, term_width, max_lines, f):
   return num_lines
 
 
-def _PrintLong(matches, max_match_len, term_width, max_lines, descriptions, f):
+def _PrintLong(matches,  # type: List[str]
+               max_match_len,  # type: int
+               term_width,  # type: int
+               max_lines,  # type: int
+               descriptions,  # type: Dict[str, str]
+               f,  # type: Any
+               ):
+  # type: (...) -> int
   """Print flags with descriptions, one per line.
 
   Args:
@@ -276,8 +310,17 @@ class NiceDisplay(_IDisplay):
   - Stripping off the common prefix according to OUR rules, not readline's.
   - displaying descriptions of flags and builtins
   """
-  def __init__(self, term_width, comp_state, prompt_state, debug_f,
-               readline_mod, f=sys.stdout, num_lines_cap=10, bold_line=False):
+  def __init__(self,
+               term_width,  # type: int
+               comp_state,  # type: State
+               prompt_state,  # type: PromptState
+               debug_f,  # type: DebugFile
+               readline_mod,  # type: Any
+               f=sys.stdout,  # type: IO[bytes]
+               num_lines_cap=10,  # type: int
+               bold_line=False,  # type: bool
+               ):
+    # type: (...) -> None
     """
     Args:
       bold_line: Should user's entry be bold?
@@ -297,14 +340,16 @@ class NiceDisplay(_IDisplay):
     self.m_count = 0
 
     # hash of matches -> count.  Has exactly ONE entry at a time.
-    self.dupes = {}
+    self.dupes = {}  # type: Dict[int, int]
 
   def Reset(self):
+    # type: () -> None
     """Call this in between commands."""
     self.num_lines_last_displayed = 0
     self.dupes.clear()
 
   def _ReturnToPrompt(self, num_lines):
+    # type: (int) -> None
     # NOTE: We can't use ANSI terminal codes to save and restore the prompt,
     # because the screen may have scrolled.  Instead we have to keep track of
     # how many lines we printed and the original column of the cursor.
@@ -326,6 +371,7 @@ class NiceDisplay(_IDisplay):
     self.f.flush()
 
   def _PrintCandidates(self, unused_subst, matches, unused_max_match_len):
+    # type: (Optional[Any], List[str], Optional[Any]) -> None
     term_width = self._GetTerminalWidth()
 
     # Variables set by the completion generator.  They should always exist,
@@ -384,6 +430,7 @@ class NiceDisplay(_IDisplay):
     self.c_count += 1
 
   def PrintRequired(self, msg, *args):
+    # type: (str, *Any) -> None
     """
     Print a message below the prompt, and then return to the location on the
     prompt line.
@@ -415,9 +462,11 @@ class NiceDisplay(_IDisplay):
     self.m_count += 1
 
   def PrintOptional(self, msg, *args):
+    # type: (str, *Any) -> None
     self.PrintRequired(msg, *args)
 
   def ShowPromptOnRight(self, rendered):
+    # type: (str) -> None
     n = self._GetTerminalWidth() - 2 - len(rendered)
     spaces = ' ' * n
 
@@ -427,6 +476,7 @@ class NiceDisplay(_IDisplay):
     self.f.write(spaces + _REVERSE + ' ' + rendered + ' ' + _RESET + '\r\n')
 
   def EraseLines(self):
+    # type: () -> None
     """Clear N lines one-by-one.
 
     Assume the cursor is right below thep rompt:
@@ -458,6 +508,7 @@ class NiceDisplay(_IDisplay):
     self.f.flush()  # Without this, output will look messed up
 
   def _GetTerminalWidth(self):
+    # type: () -> int
     if self.width_is_dirty:
       try:
         self.term_width = libc.get_terminal_width()
@@ -470,6 +521,7 @@ class NiceDisplay(_IDisplay):
     return self.term_width
 
   def OnWindowChange(self):
+    # type: () -> None
     # Only do it for the NEXT completion.  The signal handler can be run in
     # between arbitrary bytecodes, and we don't want a single completion
     # display to be shown with different widths.

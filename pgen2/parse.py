@@ -15,7 +15,7 @@ _ = log
 from typing import TYPE_CHECKING, Optional, Any, List
 
 if TYPE_CHECKING:
-  from _devbuild.gen.syntax_asdl import token
+  from _devbuild.gen.syntax_asdl import Token
   from pgen2.grammar import Grammar, dfa_t
 
 
@@ -23,7 +23,7 @@ class ParseError(Exception):
     """Exception to signal the parser is stuck."""
 
     def __init__(self, msg, type_, tok):
-        # type: (str, int, token) -> None
+        # type: (str, int, Token) -> None
         self.msg = msg
         self.type = type_
         self.tok = tok
@@ -37,9 +37,9 @@ class PNode(object):
   __slots__ = ('typ', 'tok', 'children')
 
   def __init__(self, typ, tok, children):
-    # type: (int, Optional[token], List[PNode]) -> None
+    # type: (int, Optional[Token], Optional[List[PNode]]) -> None
     self.typ = typ  # token or non-terminal
-    self.tok = tok  # In Oil, this is syntax_asdl.token.  In OPy, it's a
+    self.tok = tok  # In Oil, this is syntax_asdl.Token.  In OPy, it's a
                     # 3-tuple (val, prefix, loc)
                     # NOTE: This is None for the first entry in the stack?
     self.children = children
@@ -50,6 +50,14 @@ class PNode(object):
     ch_str = 'with %d children' % len(self.children) \
         if self.children is not None else ''
     return '(PNode %s %s %s)' % (self.typ, tok_str, ch_str)
+
+
+class _StackItem(object):
+  def __init__(self, dfa, state, node):
+    # type: (dfa_t, int, PNode) -> None
+    self.dfa = dfa
+    self.state = state
+    self.node = node
 
 
 class Parser(object):
@@ -118,11 +126,11 @@ class Parser(object):
         """
         newnode = PNode(start, None, [])
         # Each stack entry is a tuple: (dfa, state, node).
-        self.stack = [(self.grammar.dfas[start], 0, newnode)]
+        self.stack = [_StackItem(self.grammar.dfas[start], 0, newnode)]
         self.rootnode = None  # type: Optional[PNode]
 
     def addtoken(self, typ, opaque, ilabel):
-        # type: (int, token, int) -> bool
+        # type: (int, Token, int) -> bool
         """Add a token; return True iff this is the end of the program."""
         # Loop until the token is shifted; may raise exceptions
 
@@ -131,9 +139,12 @@ class Parser(object):
         # Do the "accelerators" in pgen.c have anything to do with it?
 
         while True:
-            dfa, state, node = self.stack[-1]
-            states, _ = dfa
+            top = self.stack[-1]
+            states, _ = top.dfa
+            state = top.state
+
             arcs = states[state]
+
             # Look for a state with this label
             found = False
             for ilab, newstate in arcs:
@@ -149,17 +160,19 @@ class Parser(object):
                     # TODO: Does this condition translate?
                     while states[state] == [(0, state)]:
                         self.pop()
-                        if not self.stack:
+                        if len(self.stack) == 0:
                             # Done parsing!
                             return True
-                        dfa, state, node = self.stack[-1]
-                        states, _ = dfa
+                        top = self.stack[-1]
+                        states, _ = top.dfa
+                        state = top.state
+
                     # Done with this token
                     return False
                 elif t >= 256:
                     # See if it's a symbol and if we're in its first set
                     itsdfa = self.grammar.dfas[t]
-                    itsstates, itsfirst = itsdfa
+                    _, itsfirst = itsdfa
                     if ilabel in itsfirst:
                         # Push a symbol
                         self.push(t, opaque, self.grammar.dfas[t], newstate)
@@ -177,7 +190,7 @@ class Parser(object):
                     if left == 0 and right == state:
                         # An accepting state, pop it and try something else
                         self.pop()
-                        if not self.stack:
+                        if len(self.stack) == 0:
                             # Done parsing, but another token is input
                             raise ParseError("too much input", typ, opaque)
                         found2 = True
@@ -187,29 +200,30 @@ class Parser(object):
                     raise ParseError("bad input", typ, opaque)
 
     def shift(self, typ, opaque, newstate):
-        # type: (int, token, int) -> None
+        # type: (int, Token, int) -> None
         """Shift a token.  (Internal)"""
-        dfa, _, node = self.stack[-1]
+        top = self.stack[-1]
         newnode = PNode(typ, opaque, None)
         if newnode is not None:
-            node.children.append(newnode)
-        self.stack[-1] = (dfa, newstate, node)
+            top.node.children.append(newnode)
+        self.stack[-1].state = newstate
 
     def push(self, typ, opaque, newdfa, newstate):
-        # type: (int, token, dfa_t, int) -> None
+        # type: (int, Token, dfa_t, int) -> None
         """Push a nonterminal.  (Internal)"""
-        dfa, _, node = self.stack[-1]
+        top = self.stack[-1]
         newnode = PNode(typ, opaque, [])
-        self.stack[-1] = (dfa, newstate, node)
-        self.stack.append((newdfa, 0, newnode))
+        self.stack[-1].state = newstate
+        self.stack.append(_StackItem(newdfa, 0, newnode))
 
     def pop(self):
         # type: () -> None
         """Pop a nonterminal.  (Internal)"""
-        _, _, newnode = self.stack.pop()
+        top = self.stack.pop()
+        newnode = top.node
         if newnode is not None:
-            if self.stack:
-                _, _, node = self.stack[-1]
-                node.children.append(newnode)
+            if len(self.stack):
+                top2 = self.stack[-1]
+                top2.node.children.append(newnode)
             else:
                 self.rootnode = newnode

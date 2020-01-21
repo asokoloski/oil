@@ -9,6 +9,7 @@ import sys
 
 from typing import List, Optional, Tuple
 
+from mypy import build
 from mypy.build import build as mypy_build
 from mypy.build import BuildSource
 from mypy.main import process_options
@@ -58,15 +59,24 @@ def get_mypy_config(paths: List[str],
 
 
 def ModulesToCompile(result, mod_names):
+  # HACK TO PUT asdl/runtime FIRST.  It has runtime::SPID.
+  #
+  # Another fix is to hoist those to the declaration phase?  Not sure if that
+  # makes sense.
+
+  # Somehow the MyPy builder reorders the modules.
+  for name, module in result.files.items():
+    if name == 'asdl.runtime':
+      yield name, module
+
   for name, module in result.files.items():
     # Only translate files that were mentioned on the command line
     suffix = name.split('.')[-1]
     if suffix not in mod_names:
       continue
 
-    # Why do I get oil.asdl.tdop in addition to asdl.tdop?  This seems to
-    # work.
-    if name.startswith('oil.'):
+    # Don't do it a second time!
+    if name == 'asdl.runtime':
       continue
 
     yield name, module
@@ -75,7 +85,10 @@ def ModulesToCompile(result, mod_names):
 def main(argv):
   # TODO: Put these in the shell script
   mypy_options = [
-      '--py2', '--strict', '--no-implicit-optional', '--no-strict-optional'
+     '--py2', '--strict', '--no-implicit-optional', '--no-strict-optional',
+     # for consistency?
+     '--follow-imports=silent',
+     #'--verbose',
   ]
      
   paths = argv[1:]  # e.g. asdl/typed_arith_parse.py
@@ -117,16 +130,13 @@ def main(argv):
   # literals, modules, errors = genops.build_ir(file_nodes, result.graph,
   # result.types)
 
+  # TODO: Debug what comes out of here.
+  #build.dump_graph(result.graph)
+  #return
+
   # no-op
   for name in result.graph:
     state = result.graph[name]
-
-  # Print the tree for debugging
-  if 0:
-    for name, module in ModulesToCompile(result, mod_names):
-      builder = debug_pass.Print(result.types)
-      builder.visit_mypy_file(module)
-    return
 
   # GLOBAL Constant pass over all modules.  We want to collect duplicate
   # strings together.  And have globally unique IDs str0, str1, ... strN.
@@ -135,6 +145,35 @@ def main(argv):
   pass1 = const_pass.Collect(result.types, const_lookup, const_code)
 
   to_compile = list(ModulesToCompile(result, mod_names))
+
+  # HACK: Why do I get oil.asdl.tdop in addition to asdl.tdop?
+  names = set(name for name, _ in to_compile)
+  filtered = []
+  for name, module in to_compile:
+    # HACK
+    if 'core.main_loop' in name:
+      continue
+    if name.startswith('oil.') and name[4:] in names:
+      continue
+    filtered.append((name, module))
+  to_compile = filtered
+
+  import pickle
+  if 1:
+    for name, module in to_compile:
+      log('to_compile %s', name)
+
+      # can't pickle but now I see deserialize() nodes and stuff
+      #s = pickle.dumps(module)
+      #log('%d pickle', len(s))
+
+  # Print the tree for debugging
+  if 0:
+    for name, module in to_compile:
+      builder = debug_pass.Print(result.types)
+      builder.visit_mypy_file(module)
+    return
+
   for name, module in to_compile:
     pass1.visit_mypy_file(module)
 
@@ -164,13 +203,14 @@ def main(argv):
   #log('V %s', virtual.virtuals)
 
   local_vars = {}  # FuncDef node -> (name, c_type) list
+  fmt_ids = {}  # Node -> fmt_name
 
   # First generate ALL C++ declarations / "headers".
   # class Foo { void method(); }; class Bar { void method(); };
   for name, module in to_compile:
     p3 = cppgen_pass.Generate(result.types, const_lookup, f,
-                              local_vars=local_vars, virtual=virtual,
-                              decl=True)
+                              local_vars=local_vars, fmt_ids=fmt_ids,
+                              virtual=virtual, decl=True)
 
     p3.visit_mypy_file(module)
 
@@ -179,11 +219,8 @@ def main(argv):
   # void Bar:method() { ... }
   for name, module in to_compile:
     p4 = cppgen_pass.Generate(result.types, const_lookup, f,
-                              local_vars=local_vars)
+                              local_vars=local_vars, fmt_ids=fmt_ids)
     p4.visit_mypy_file(module)
-
-  for name, module in to_compile:
-    log('to_compile: %s', name)
 
 
 if __name__ == '__main__':

@@ -6,7 +6,9 @@
 #   devtools/release.sh <function name>
 #
 # Steps:
-#   build/doc.sh update-src-versions  (optional)
+#   edit oil-version.txt and build/doc.sh update-src-versions
+#   $0 make-release-branch
+#   build/dev.sh yajl-release
 #   $0 quick-oil-tarball     # build FIRST tarball
 #   build/test.sh oil-tar T  # extract, build, install
 #                            # for cpython-defs source scanning and dogfood
@@ -15,9 +17,12 @@
 #   build/cpython-defs.sh {oil-py-names,filter-methods}
 #     (regenerate C source)
 #
+# Shortcut for below: $0 auto-machine1
+#
 #   $0 build-and-test  # build FINAL tarball, run unit/osh2oil suites, etc.
 #     prereq: build/codegen.sh {download,install}-re2c
 #     test/gold.sh run-for-release (outside OSH_HIJACK_SHEBANG)
+#   [switch benchmarks-data repo] commit src/oil-native-* and push to flanders.
 #   $0 metrics  # this can catch bugs, operates on FINAL tarball
 #   test/wild.sh all (3-4 minutes on fast machine, outside OSH_HIJACK_SHEBANG)
 #   $0 test-opy (2 minutes on fast machine)
@@ -39,7 +44,7 @@
 #   devtools/release-version.sh git-changelog-$VERSION
 #   devtools/release-version.sh announcement-$VERSION
 #   MAYBE: ./local.sh test-release-tree if you want to preview it
-#   $0 deploy-doc
+#   $0 deploy-doc (makes releases.html)
 #
 #   demo/osh-debug.sh analyze  # see what you ran
 # 
@@ -60,10 +65,17 @@ readonly REPO_ROOT=$(cd $(dirname $0)/..; pwd)
 readonly OSH_RELEASE_BINARY=$REPO_ROOT/_tmp/oil-tar-test/oil-$OIL_VERSION/_bin/osh
 readonly OIL_RELEASE_BINARY=$REPO_ROOT/_tmp/oil-tar-test/oil-$OIL_VERSION/_bin/oil
 
-source devtools/common.sh  # html-footer
+source devtools/common.sh  # banner
 
 log() {
   echo "$@" 1>&2
+}
+
+make-release-branch() {
+  git checkout master
+  local name=release/$OIL_VERSION
+  git checkout -b $name
+  git push -u origin $name
 }
 
 # For redoing a release.  This is everything until you have to 'git pull' the
@@ -83,7 +95,6 @@ auto-machine1() {
 
 # oilshell.org__deploy/
 #   releases.html
-#   opy-releases.html  (later)
 #   release/
 #     $VERSION/
 #       index.html  # release page, from doc/release-index.md
@@ -92,8 +103,8 @@ auto-machine1() {
 #       announcement.html  # HTML redirect
 #       changelog.html
 #       doc/
-#         INSTALL.html
-#         osh-quick-ref.html
+#         index.html
+#         ...
 #       test/  # results
 #         spec.wwz/
 #           machine-lisa/
@@ -134,7 +145,7 @@ auto-machine1() {
 _clean-tmp-dirs() {
   rm -r -f \
     _tmp/{spec,unit,gold,parse-errors,osh2oil,wild/www} \
-    _tmp/metrics \
+    _tmp/{metrics,important-source-code} \
     _tmp/opy-test \
     _tmp/{osh-parser,osh-runtime,vm-baseline,ovm-build,oheap} \
     _tmp/oil-tar-test
@@ -183,6 +194,7 @@ readonly -a OTHER_TESTS=(
   gold 
   osh2oil 
   parse-errors runtime-errors
+  oil-runtime-errors
   arena
   osh-usage oshc-deps
   opyc
@@ -269,11 +281,18 @@ test-opy() {
 }
 
 spec-all() {
+  ### Run all spec tests
+
+  # TODO: Look at task files and fail all are green and red.  See
+  # 'test/spec-runner.sh all-parallel'.
+
+  # Create the tests we're running
+  test/smoosh.sh make-spec
+
   # 8/2019: Added smoosh
   export OSH_LIST="$REPO_ROOT/bin/osh $OSH_RELEASE_BINARY"
   export OIL_LIST="$REPO_ROOT/bin/oil $OIL_RELEASE_BINARY"
   test/spec.sh all-and-smoosh
-  #test/spec.sh oil-all
 }
 
 # For quickly debugging failures that don't happen in dev mode.
@@ -283,10 +302,10 @@ spec-one() {
   test/spec.sh "$@"
 }
 
-
-# TODO: Log this whole thing?  Include logs with the /release/ page?
 build-and-test() {
-  # 5 steps: clean, dev build, unit tests, release build, end-to-end tests.
+  ### Build tarballs and test them.  And preliminaries like unit tests.
+
+  # TODO: Log this whole thing?  Include logs with the /release/ page?
 
   # Before doing anything
   test/lint.sh travis
@@ -294,6 +313,17 @@ build-and-test() {
   _clean
   _dev-build
   test/unit.sh run-for-release
+
+  # oil-native
+  devtools/release-native.sh make-tar
+  devtools/release-native.sh extract-for-benchmarks
+  # Don't need to build it twice
+  #devtools/release-native.sh test-tar
+
+  # For benchmarks
+  _oil-native-build
+
+  # App bundle
   _release-build
   _test-release-build
 
@@ -307,6 +337,15 @@ _install() {
   sudo apt install python-dev
 }
 
+_oil-native-build() {
+  local dest="../benchmark-data/src/oil-native-$OIL_VERSION"
+  pushd $dest
+  build/mycpp.sh compile-osh-parse-opt
+  # To run tests later
+  build/mycpp.sh compile-osh-parse-asan
+  popd
+}
+
 # Run before benchmarks/auto.sh all.  We just build, and assume we tested.
 benchmark-build() {
   if test -n "$HAVE_ROOT"; then
@@ -314,6 +353,7 @@ benchmark-build() {
   fi
   _clean
   _dev-build
+  _oil-native-build
 
   _release-build
 }
@@ -437,6 +477,7 @@ line-counts() {
   # Counting directly from the build.
   metrics/tarball.sh linecount-pydeps > $out/pydeps.txt
   metrics/tarball.sh linecount-nativedeps > $out/nativedeps.txt
+  metrics/tarball.sh linecount-oil-cpp > $out/oil-cpp.txt
 
   # My arbitrary categorization.
   metrics/source-code.sh all > $out/src.txt  # Count repo lines
@@ -452,6 +493,9 @@ line-counts() {
 metrics() {
   local out=_tmp/metrics
   mkdir -p $out
+
+  # Generate C++ code that will be conuted later
+  build/dev.sh oil-asdl-to-cpp
 
   line-counts $PWD/$out/line-counts
 
@@ -504,13 +548,6 @@ add-date-and-links() {
   '
 }
 
-# TODO:
-# Test out web/ *.css,js,html
-# metrics/line-counts.wwz/
-#   src.txt
-#   pydeps.txt
-#   nativedeps.txt
-
 build-tree() {
   local root=_release/VERSION
   mkdir -p $root/{doc,test}
@@ -522,13 +559,10 @@ build-tree() {
 
   # Docs
 
-  # NOTE: This action is also run in the build.  It generates code that goes in
-  # the binary.
-  build/doc.sh osh-quick-ref $root
-  build/doc.sh install $root
-  build/doc.sh manual $root $release_date
+  # Writes _release/VERSION and _tmp/release-index.html
+  build/doc.sh run-for-release
 
-  build/doc.sh release-index _tmp/release-index.html
+  # Note: this truncates the date!
   add-date-and-links $release_date < _tmp/release-index.html > $root/index.html
 
   # Problem: You can't preview it without .wwz!
@@ -573,7 +607,8 @@ sync-old-tar() {
 deploy-tar() {
   mkdir -p $DOWNLOAD_DIR
 
-  cp -v _release/oil-$OIL_VERSION.tar.* $DOWNLOAD_DIR
+  # Also copy oil-native
+  cp -v _release/oil-*$OIL_VERSION.tar.* $DOWNLOAD_DIR
 
   ls -l $DOWNLOAD_DIR
 }
@@ -618,9 +653,16 @@ _tarball-links-row-html() {
 </tr>
 EOF
 
-  for name in oil-$version.tar.{xz,gz}; do
+  # only release .xz for oil-native
+  for name in oil-$version.tar.{xz,gz} oil-native-$version.tar.xz; do
     local url="/download/$name"  # The server URL
     local path="../oilshell.org__deploy/download/$name"
+
+    # The native version might not exist
+    if [[ $name == oil-native-* && ! -f $path ]]; then
+      continue
+    fi
+
     local checksum=$(sha256sum $path | awk '{print $1}')
     local size=$(pretty-size $path)
 
@@ -701,7 +743,6 @@ _html-index() {
   </td>
   <td>
     <p>                <a href="release/$version/announcement.html">Announcement</a>
-       &nbsp; | &nbsp; <a href="release/$version/doc/INSTALL.html">INSTALL</a>
        &nbsp; | &nbsp; <a href="release/$version/">Docs and Details</a>
     </p>
   </td>
@@ -724,32 +765,36 @@ EOF
 }
 
 _releases-html-header() {
+  # TODO: use html-head here, and publish web/*.css somewhere outside of
+  # /release/$VERSION/?  The list of all releases isn't versioned for obvious
+  # reasons.  Other docs are in the oilshell.org repo using the all-2020.css
+  # bundle.
+
   cat <<EOF
 <!DOCTYPE html>
 <html>
   <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Oil Releases</title>
     <style>
 EOF
 
+  cat web/base.css
   cat web/release-index.css
 
 cat <<EOF
-      body {
-        width: 50em;  /* override width */
-      }
       h1 {
         text-align: center;
       }
     </style>
   </head>
-  <body>
+  <body class="width50">
     <p id="home-link">
       <a href="/">oilshell.org</a>
     </p>
     <h1>Oil Releases</h1>
 
-    <table class="file-table">
+    <table class="release-table">
 EOF
 }
 
@@ -759,8 +804,15 @@ html-index() {
 
   { _releases-html-header
     _html-index $release_root_dir
-    html-footer
+
+    cat <<EOF
+    </table>
+  </body>
+</html>
+EOF
+
   } > $out
+
   ls -l $out
 }
 

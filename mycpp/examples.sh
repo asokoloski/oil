@@ -6,7 +6,7 @@ typecheck-oil() {
   local flags='--no-strict-optional'
 
   set +o errexit
-  MYPYPATH="$REPO_ROOT" \
+  MYPYPATH="$REPO_ROOT:$REPO_ROOT/native" \
     mypy --py2 --strict $flags examples/$name.py | tee _tmp/err.txt
   set -o errexit
 
@@ -42,28 +42,6 @@ pyrun-parse() {
   PYTHONPATH="$REPO_ROOT/mycpp:$REPO_ROOT/vendor:$REPO_ROOT" examples/parse.py
 }
 
-
-# TODO: Need a header for this.
-
-readonly HNODE_HEADER='
-class Str;
-namespace hnode_asdl {
-  class hnode__Record;
-  class hnode__Leaf;
-  enum class color_e;
-  typedef color_e color_t;
-}
-
-namespace runtime {  // declare
-hnode_asdl::hnode__Record* NewRecord(Str* node_type);
-hnode_asdl::hnode__Leaf* NewLeaf(Str* s, hnode_asdl::color_t e_color);
-extern Str* TRUE_STR;
-extern Str* FALSE_STR;
-
-}  // declare namespace runtime
-'
-
-
 # classes and ASDL
 translate-parse() {
   # Need this otherwise we get type errors
@@ -71,14 +49,14 @@ translate-parse() {
 
   local snippet='
 #include "expr_asdl.h"
-#include "pretty.h"
+#include "asdl_pretty.h"
 
 Str* repr(void* obj) {
   return new Str("TODO: repr()");
 }
 
 '
-  translate-ordered parse "${HNODE_HEADER}$snippet"  \
+  translate-ordered parse "$snippet"  \
     $REPO_ROOT/pylib/cgi.py \
     $REPO_ROOT/asdl/runtime.py \
     $REPO_ROOT/asdl/format.py \
@@ -91,9 +69,9 @@ compile-parse() {
   asdl-gen cpp examples/expr.asdl _gen/expr_asdl
 
   compile-with-asdl parse \
-    ../cpp/pretty.cc \
+    ../cpp/asdl_pretty.cc \
     _gen/expr_asdl.cc \
-    ../_devbuild/gen-cpp/hnode_asdl.cc
+    ../_build/cpp/hnode_asdl.cc
 }
 
 ### parse
@@ -158,7 +136,7 @@ using id_kind_asdl::Id_t;  // TODO: proper ASDL modules
 #include "mylib.h"
 
 // Stub
-void p_die(Str* fmt, syntax_asdl::token* blame_token) {
+void p_die(Str* s, syntax_asdl::token* blame_token) {
   throw AssertionError();
 }
 
@@ -194,7 +172,7 @@ Str* repr(syntax_asdl::source_t* obj) {
   return new Str("TODO");
 }
 '
-  translate-ordered alloc_main "${HNODE_HEADER}$snippet" \
+  translate-ordered alloc_main "$snippet" \
     $REPO_ROOT/asdl/runtime.py \
     $REPO_ROOT/core/alloc.py \
     examples/alloc_main.py
@@ -226,75 +204,26 @@ typecheck-pgen2_demo() {
   typecheck-oil pgen2_demo
 }
 
+# These files compile
+FILES=(
+  $REPO_ROOT/asdl/runtime.py 
+  $REPO_ROOT/core/alloc.py 
+  $REPO_ROOT/frontend/reader.py 
+  $REPO_ROOT/frontend/lexer.py 
+  $REPO_ROOT/pgen2/grammar.py 
+  $REPO_ROOT/pgen2/parse.py 
+  $REPO_ROOT/oil_lang/expr_parse.py 
+  $REPO_ROOT/oil_lang/expr_to_ast.py 
+)
+
+readonly PGEN2_DEMO_FILES=("${FILES[@]}")
+
+# NOTE: Doesn't compile anymore.  Moved onto bin/osh_parse.py
 translate-pgen2_demo() {
   local name='pgen2_demo'
 
-  # NOTE: We didn't import source_e because we're using isinstance().
-  local snippet='
-#include "id_kind_asdl.h"  // syntax.asdl depends on this
-using id_kind_asdl::Id_t;  // TODO: proper ASDL modules 
-using id_kind_asdl::Kind_t;
-
-#include "syntax_asdl.h"
-#include "types_asdl.h"
-
-#include "lookup.h"
-#include "match.h"
-#include "grammar_nt.h"
-
-// Hack for now.  Every sum type should have repr()?
-Str* repr(syntax_asdl::source_t* obj) {
-  return new Str("TODO");
-}
-
-// STUB
-void p_die(Str* fmt, syntax_asdl::token* blame_token) {
-  throw AssertionError();
-}
-
-// STUB
-void p_die(Str* fmt, Str* s, syntax_asdl::token* blame_token) {
-  throw AssertionError();
-}
-
-// STUB
-void p_die(Str* fmt, syntax_asdl::word_part_t* part) {
-  throw AssertionError();
-}
-
-namespace parse_lib {
-  class ParseContext;
-}
-
-// STUB
-namespace util {
-  class ParseError {
-   public:
-    ParseError(Str* s, syntax_asdl::token* tok) {
-    }
-  };
-}
-
-namespace arith_nt {
-  const int arith_expr = 1;
-}
-'
-# problem with isinstance() and any type
-    # do we need this/
-
-# other modules:
-# core.util.ParseError: move this to core/errors.py?
-
-  translate-ordered $name "${HNODE_HEADER}$snippet" \
-    $REPO_ROOT/asdl/runtime.py \
-    $REPO_ROOT/core/alloc.py \
-    $REPO_ROOT/frontend/reader.py \
-    $REPO_ROOT/frontend/lexer.py \
-    $REPO_ROOT/pgen2/grammar.py \
-    $REPO_ROOT/pgen2/parse.py \
-    $REPO_ROOT/oil_lang/expr_parse.py \
-    $REPO_ROOT/oil_lang/expr_to_ast.py \
-    examples/$name.py
+  translate-ordered $name "$(cat ../cpp/preamble.h)" \
+    "${PGEN2_DEMO_FILES[@]}" examples/$name.py
 
   compile-pgen2_demo
 } 
@@ -303,7 +232,9 @@ compile-pgen2_demo() {
   local name='pgen2_demo'
 
   compile-with-asdl $name \
-    ../cpp/match.cc \
+    ../cpp/frontend_match.cc \
+    ../cpp/asdl_pretty.cc \
+    ../cpp/osh_arith_parse.cc \
     ../_devbuild/gen-cpp/syntax_asdl.cc \
     ../_devbuild/gen-cpp/hnode_asdl.cc \
     ../_devbuild/gen-cpp/id_kind_asdl.cc \

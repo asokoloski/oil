@@ -4,11 +4,12 @@ state_test.py: Tests for state.py
 """
 
 import unittest
+import os.path
 
 from _devbuild.gen.runtime_asdl import (
     scope_e, lvalue, value, value_e, var_flags_e,
 )
-from core import util
+from core import error
 from core import test_lib
 from osh import state  # module under test
 
@@ -48,7 +49,13 @@ class MemTest(unittest.TestCase):
     self.assertEqual('bin/osh', search_path.Lookup('bin/osh'))
 
     # Not hermetic, but should be true on POSIX systems.
-    self.assertEqual('/usr/bin/env', search_path.Lookup('env'))
+    # Also see https://www.freedesktop.org/wiki/Software/systemd/TheCaseForTheUsrMerge/
+    #  - on some systems, /bin is a symlink to /usr/bin
+    if os.path.isfile('/bin/env'):
+        self.assertEqual(search_path.Lookup('env'), '/bin/env')
+    else:
+        self.assertEqual(search_path.Lookup('env'), '/usr/bin/env')
+
 
   def testPushTemp(self):
     mem = _InitMem()
@@ -161,7 +168,7 @@ class MemTest(unittest.TestCase):
       mem.SetVar(
           lvalue.Named('COMPREPLY'), None, (var_flags_e.Exported,),
           scope_e.Dynamic)
-    except util.FatalRuntimeError as e:
+    except error.FatalRuntime as e:
       pass
     else:
       self.fail("Expected failure")
@@ -179,7 +186,7 @@ class MemTest(unittest.TestCase):
     try:
       mem.SetVar(
           lvalue.Named('r'), value.Str('newvalue'), (), scope_e.Dynamic)
-    except util.FatalRuntimeError as e:
+    except error.FatalRuntime as e:
       pass
     else:
       self.fail("Expected failure")
@@ -211,7 +218,7 @@ class MemTest(unittest.TestCase):
     if 0:
       try:
         mem.SetVar(lhs, value.MaybeStrArray(['x', 'y', 'z']), (), scope_e.Dynamic)
-      except util.FatalRuntimeError as e:
+      except error.FatalRuntime as e:
         pass
       else:
         self.fail("Expected failure")
@@ -225,7 +232,7 @@ class MemTest(unittest.TestCase):
     try:
       # a[1]=3
       mem.SetVar(lhs, value.Str('3'), (), scope_e.Dynamic)
-    except util.FatalRuntimeError as e:
+    except error.FatalRuntime as e:
       pass
     else:
       self.fail("Expected failure")

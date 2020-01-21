@@ -3,10 +3,18 @@
  * built into /releases.html.
  */
 
-/* COMMON */
-body {
-  margin: 0 auto;
-  width: 40em;  /* overridden in devtools/release.sh for releases.html */
+h1 {
+  font-size: 1.5em;  /* reduce to what browsers apparently use for h2 */
+}
+
+h2 {
+  font-size: 1.2em;  /* reduce to what browsers apparently use for h3 */
+}
+
+h3 {
+  font-size: 1.0em;
+  margin-left: 1em;
+  color: darkgreen;  /* different than blog */
 }
 
 pre {
@@ -18,10 +26,14 @@ code {
   color: green;
 }
 
-#home-link {
-  text-align: right;
-}
 /* END COMMON */
+
+
+/* Downlad links are in both releases.html and /release/$VERSION/index.html */
+
+.release-table {
+  padding: 1em;
+}
 
 .file-table {
   padding: 1em;

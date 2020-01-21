@@ -5,7 +5,7 @@ from __future__ import print_function
 
 from _devbuild.gen.id_kind_asdl import Id, Id_t, Id_str
 from _devbuild.gen.syntax_asdl import (
-    token, speck, double_quoted, single_quoted, simple_var_sub, braced_var_sub,
+    Token, speck, double_quoted, single_quoted, simple_var_sub, braced_var_sub,
     command_sub, sh_array_literal,
     command, command__VarDecl, command__PlaceMutation, command__Func,
     expr, expr_e, expr_t, expr__Var, expr__Dict, expr_context_e,
@@ -294,9 +294,9 @@ class Transformer(object):
 
     if id_ == Id.Arith_Slash:
       r = self._Regex(children[1])
-      flags = []  # type: List[token]
+      flags = []  # type: List[Token]
       # TODO: Parse translation preference.
-      trans_pref = None  # type: token
+      trans_pref = None  # type: Token
       return expr.RegexLiteral(children[0].tok, r, flags, trans_pref)
 
     raise NotImplementedError(Id_str(id_))
@@ -530,7 +530,7 @@ class Transformer(object):
         op = children[0]
         e = children[1]
 
-        assert isinstance(op.tok, token)
+        assert isinstance(op.tok, Token)
         return expr.Unary(op.tok, self.Expr(e))
 
       elif typ == grammar_nt.power:
@@ -644,7 +644,7 @@ class Transformer(object):
         p_die("Can't assign to this expression", token=p.tok if p.tok else None)
     return places
 
-  def VarDecl(self, p_node):
+  def MakeVarDecl(self, p_node):
     # type: (PNode) -> command__VarDecl
     """
     oil_var_decl: name_type_list '=' testlist end_stmt
@@ -660,7 +660,7 @@ class Transformer(object):
     # The caller should fill in the keyword token.
     return command.VarDecl(None, lhs, rhs)
 
-  def PlaceMutation(self, p_node):
+  def MakePlaceMutation(self, p_node):
     # type: (PNode) -> command__PlaceMutation
     """
     oil_place_mutation: place_list (augassign | '=') testlist end_stmt
@@ -777,7 +777,7 @@ class Transformer(object):
     return None
 
   def _ProcParam(self, pnode):
-    # type: (PNode) -> Tuple[token, expr_t]
+    # type: (PNode) -> Tuple[Token, expr_t]
     """
     func_param: Expr_Name [type_expr] ['=' expr] | '...' Expr_Name
     """
@@ -804,8 +804,8 @@ class Transformer(object):
     n = len(children)
 
     params = []  # type: List[param]
-    rest = None  # type: Optional[token]
-    block = None  # type: Optional[token]
+    rest = None  # type: Optional[Token]
+    block = None  # type: Optional[Token]
 
     i = 0
     while i < n:
@@ -851,12 +851,12 @@ class Transformer(object):
     raise AssertionError(Id_str(tok0.id))
 
   def _FuncParams(self, p_node):
-    # type: (PNode) -> Tuple[List[param], Optional[token]]
+    # type: (PNode) -> Tuple[List[param], Optional[Token]]
     """
     func_params: [func_param] (',' func_param)* [',' '...' Expr_Name]
     """
     params = []  # type: List[param]
-    splat = None  # type: Optional[token]
+    splat = None  # type: Optional[Token]
 
     children = p_node.children
     n = len(children)
@@ -1062,7 +1062,7 @@ class Transformer(object):
     return terms
 
   def _NameInRegex(self, negated_tok, tok):
-    # type: (token, token) -> re_t
+    # type: (Token, Token) -> re_t
 
     if negated_tok:  # For error messages
       negated_speck = speck(negated_tok.id, negated_tok.span_id)
@@ -1079,15 +1079,19 @@ class Transformer(object):
       return posix_class(negated_speck, val)
 
     perl = PERL_CLASSES.get(val)
-    if perl:
+    if perl is not None:
       return perl_class(negated_speck, perl)
+
+    if val[0].isupper():  # e.g. HexDigit
+      return re.Splice(tok)
 
     p_die("%r isn't a character class", val, token=tok)
 
   def _NameInClass(self, negated_tok, tok):
-    # type: (token, token) -> class_literal_term_t
+    # type: (Token, Token) -> class_literal_term_t
     """
-    Like the above, but 'dot' doesn't mean anything.
+    Like the above, but 'dot' doesn't mean anything.  And `d` is a literal 'd',
+    not `digit`.
     """
     if negated_tok:  # For error messages
       negated_speck = speck(negated_tok.id, negated_tok.span_id)
@@ -1095,11 +1099,25 @@ class Transformer(object):
       negated_speck = None
 
     val = tok.val
+
+    # A bare, unquoted character literal.  In the grammar, this is expressed as
+    # range_char without an ending.
+
+    # d is NOT 'digit', it's a literal 'd'!
+    if len(val) == 1:
+      # Expr_Name matches VAR_NAME_RE, which starts with [a-zA-Z_]
+      assert tok.id in (Id.Expr_Name, Id.Expr_DecInt)
+
+      if negated_tok:  # [~d] is not allowed, only [~digit]
+        p_die("Can't negate this symbol", token=tok)
+      return class_literal_term.CharLiteral(tok)
+
+    # digit, word, but not d, w, etc.
     if val in POSIX_CLASSES:
       return posix_class(negated_speck, val)
 
     perl = PERL_CLASSES.get(val)
-    if perl:
+    if perl is not None:
       return perl_class(negated_speck, perl)
     p_die("%r isn't a character class", val, token=tok)
 
@@ -1162,16 +1180,35 @@ class Transformer(object):
         # | '~' [Expr_Name | class_literal]
         typ = children[1].typ
         if ISNONTERMINAL(typ):
-          ch = children[1].children
           return re.ClassLiteral(True, self._ClassLiteral(children[1]))
         else:
           return self._NameInRegex(tok, children[1].tok)
 
       if tok.id == Id.Op_LParen:
-        # | '(' regex ['as' name_type] ')'
+        # | '(' regex ')'
 
-        # TODO: Add variable
+        # Note: in ERE (d+) is the same as <d+>.  That is, Group becomes
+        # Capture.
         return re.Group(self._Regex(children[1]))
+
+      if tok.id == Id.Arith_Less:
+        # | '<' regex [':' name_type] '>'
+
+        regex = self._Regex(children[1])
+
+        n = len(children)
+        if n == 5:
+          # TODO: Add type expression
+          # YES
+          #   < d+ '.' d+ : ratio Float >
+          #   < d+ : month Int >
+          # INVALID
+          #   < d+ : month List[int] >
+          name_tok = children[3].children[0].tok
+        else:
+          name_tok = None
+
+        return re.Capture(regex, name_tok)
 
       if tok.id == Id.Arith_Colon:
         # | ':' '(' regex ')'

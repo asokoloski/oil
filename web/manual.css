@@ -1,17 +1,10 @@
-/* Style for manual
- * Some of this is copied from oilshell.org/css/base.css */
+/* Style for manual in doc/*.md */
 
-body {
-  margin: 0 auto;
-  width: 40em;
-
-  font-size: large;
-  line-height: 1.4;
-  color: #444;
-}
-
-p, ul, ol {
-  margin-left: 2em;
+/* Indent relative to headings if the screen is wide enough */
+@media screen and (min-width: 801px) {
+  p, ul, ol, pre {
+    margin-left: 2em;
+  }
 }
 
 /* h1 is the title
@@ -33,29 +26,13 @@ h3 {
 }
 
 
-/* blocks of code */
-pre {
-  background-color: #eee;
-  padding: 1em;
-  margin-left: 2em;
-}
-
 /* inline code 
  *
  * BUG FIX: Selector is 'p code' and not 'code' because markdown generates
  * <pre><code> pairs from indented blocks for some reason, and they would
  * interfere only in Chrome.
  */
-p code, li code {
+p code, li code, h2 code, h3 code, div code {
   background-color: #eee;
   padding: 4px;
-}
-
-#home-link {
-  text-align: right;
-}
-
-#version-in-header {
-  color: darkgreen;
-  font-weight: bold;
 }

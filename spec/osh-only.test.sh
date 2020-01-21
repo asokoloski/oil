@@ -22,7 +22,7 @@ f "${array[@]}"
 ' dummy a b c
 echo status=$?
 # Just check that we can parse it.  TODO: Test properties.
-python -m json.tool $TMP/*.json > /dev/null
+python2 -m json.tool $TMP/*.json > /dev/null
 echo status=$?
 ## STDOUT:
 status=1
@@ -61,4 +61,20 @@ OK
 ## END
 
 # NOTE: strict_arith has one case in arith.test.sh), strict_word-eval has a case in var-op-other.
+
+
+#### help index
+help index > $TMP/index.txt
+echo index $?
+
+help index command assign > $TMP/groups.txt
+echo index groups $?
+
+help index ZZZ > $TMP/index.txt
+echo index ZZZ $?
+## STDOUT:
+index 0
+index groups 0
+index ZZZ 1
+## END
 

@@ -41,3 +41,22 @@ tsv2html() {
 # Need an absolute path here.
 readonly _time_tool=$PWD/benchmarks/time.py 
 time-tsv() { $_time_tool --tsv "$@"; }
+
+# also in metrics/source-code.sh
+hist() { sort | uniq -c | sort -n; }
+
+html-head() {
+  PYTHONPATH=. doctools/html_head.py "$@"
+}
+
+benchmark-html-head() {
+  local title="$1"
+
+  local base_url='../../web'
+
+  html-head --title "$title" \
+    "$base_url/table/table-sort.js" \
+    "$base_url/table/table-sort.css" \
+    "$base_url/base.css"\
+    "$base_url/benchmarks.css"
+}

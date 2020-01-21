@@ -8,16 +8,18 @@ from _devbuild.gen.syntax_asdl import assign_op_e
 
 from asdl import runtime
 from asdl import pretty
-from core import util
+from core import error
 from core.util import log
 from osh import word_
 from pylib import os_path
 
 import posix_ as posix
 
-from typing import Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any, TYPE_CHECKING
 if TYPE_CHECKING:
-  from core.util import _ErrorWithLocation
+  from core.error import _ErrorWithLocation
+  from _devbuild.gen.syntax_asdl import assign_op_t
+  from _devbuild.gen.runtime_asdl import lvalue_t, value_t, scope_t
   #from osh.cmd_exec import Executor
 
 
@@ -166,7 +168,7 @@ class Tracer(object):
     self.word_ev = word_ev
     self.f = f  # can be the --debug-file as well
 
-    self.parse_cache = {}  # PS4 value -> word.Compound.  PS4 is scoped.
+    self.parse_cache = {}  # PS4 value -> compound_word.  PS4 is scoped.
 
   def _EvalPS4(self):
     """For set -x."""
@@ -190,7 +192,7 @@ class Tracer(object):
 
       try:
         ps4_word = w_parser.ReadForPlugin()
-      except util.ParseError as e:
+      except error.Parse as e:
         ps4_word = word_.ErrorWord("<ERROR: Can't parse PS4: %s>", e)
       self.parse_cache[ps4] = ps4_word
 
@@ -213,6 +215,7 @@ class Tracer(object):
     return first_char, prefix.s
 
   def OnSimpleCommand(self, argv):
+    # type: (List[str]) -> None
     # NOTE: I think tracing should be on by default?  For post-mortem viewing.
     if not self.exec_opts.xtrace:
       return
@@ -222,6 +225,7 @@ class Tracer(object):
     self.f.log('%s%s%s', first_char, prefix, cmd)
 
   def OnShAssignment(self, lval, op, val, flags, lookup_mode):
+    # type: (lvalue_t, assign_op_t, value_t, Any, scope_t) -> None
     # NOTE: I think tracing should be on by default?  For post-mortem viewing.
     if not self.exec_opts.xtrace:
       return

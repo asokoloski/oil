@@ -194,19 +194,11 @@ stage1() {
 
 print-report() {
   local in_dir=$1
-  local base_url='../../web'
+
+  benchmark-html-head 'OSH Parser Performance'
 
   cat <<EOF
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>OSH Parser Performance</title>
-    <script type="text/javascript" src="$base_url/table/table-sort.js"></script>
-    <link rel="stylesheet" type="text/css" href="$base_url/table/table-sort.css" />
-    <link rel="stylesheet" type="text/css" href="$base_url/benchmarks.css" />
-
-  </head>
-  <body>
+  <body class="width60">
     <p id="home-link">
       <a href="/">oilshell.org</a>
     </p>
@@ -217,7 +209,7 @@ print-report() {
     elapsed time measurements, but long files are chosen to minimize its
     effect.</p>
 
-    <h3>Parse Time Summary</h3>
+    <h3>Average Parsing Rate, Measured on Two Machines (lines/ms)</h3>
 EOF
   csv2html $in_dir/summary.csv
 

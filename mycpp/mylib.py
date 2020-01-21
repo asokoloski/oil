@@ -41,6 +41,53 @@ def Stdout():
   return sys.stdout
 
 
+def Stderr():
+  return sys.stderr
+
+
 def Stdin():
   return sys.stdin
 
+
+# mylib.open is the builtin, but we have different static types mylib.pyi
+open = open
+
+
+class switch(object):
+  """A ContextManager that translates to a C switch statement."""
+
+  def __init__(self, value):
+    # type: (int) -> None
+    self.value = value
+
+  def __enter__(self):
+    # type: () -> switch
+    return self
+
+  def __exit__(self, type, value, traceback):
+    # type: (Any, Any, Any) -> bool
+    return False  # Allows a traceback to occur
+
+  def __call__(self, *cases):
+    # type: (*Any) -> bool
+    return self.value in cases
+
+
+class tagswitch(object):
+  """A ContextManager that translates to switch statement over ASDL types."""
+
+  def __init__(self, node):
+    # type: (int) -> None
+    self.tag = node.tag
+
+  def __enter__(self):
+    # type: () -> tagswitch
+    return self
+
+  def __exit__(self, type, value, traceback):
+    # type: (Any, Any, Any) -> bool
+    return False  # Allows a traceback to occur
+
+  def __call__(self, *cases):
+    # type: (*Any) -> bool
+    return self.tag in cases

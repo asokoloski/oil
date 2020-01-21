@@ -10,7 +10,8 @@ import re
 import sys
 
 from core.util import log
-from frontend.lexer import C, R
+# TODO: Could move these to a place where they don't depend on Oil
+from frontend.lex import C, R
 
 
 C_DEF = [
@@ -292,6 +293,9 @@ class OilMethodFilter(object):
   def __call__(self, rel_path, def_name, method_name):
     basename = os.path.basename(rel_path) 
 
+    if method_name == 'count':  # False positive for {str,list,tuple}.count()
+      return False
+
     # enter/exit needed for 'with open'.  __length_hint__ is an optimization.
     if method_name in ('__enter__', '__exit__', '__length_hint__'):
       return True
@@ -301,7 +305,8 @@ class OilMethodFilter(object):
     # - Do we need __sizeof__?  Is that for sys.getsizeof()?
 
     # NOTE: LoadOilGrammar needs marshal.loads().
-    if basename == 'marshal.c' and method_name == 'dump':
+    # False positive for yajl.dumps() and load()
+    if basename == 'marshal.c' and method_name in ('dump', 'dumps', 'load'):
       return False
 
     # Auto-filtering gave false-positives here.

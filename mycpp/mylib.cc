@@ -3,28 +3,31 @@
 #include "mylib.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdarg.h>  // va_list, etc.
 #include <stdio.h>
 #include <unistd.h>  // isatty
 
 #include <exception>  // std::exception
 
+Str* kEmptyString = new Str("", 0);
+
 void print(Str* s) {
+  // cstring-TODO: use fwrite() with len
   printf("%s\n", s->data_);
 }
 
+void println_stderr(Str* s) {
+  // cstring-TODO: use fwrite() with len
+  fputs(s->data_, stderr);
+  fputs("\n", stderr);
+}
+
+// for hand-written code
 void log(const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
   vfprintf(stderr, fmt, args);
-  va_end(args);
-  fprintf(stderr, "\n");
-}
-
-void log(Str* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  vfprintf(stderr, fmt->data_, args);
   va_end(args);
   fprintf(stderr, "\n");
 }
@@ -46,6 +49,7 @@ Str* Str::replace(Str* old, Str* new_str) {
   // First pass to calculate the new length
   int replace_count = 0;
   while (p_this < last_possible) {
+    // cstring-TODO: Don't use strstr()
     const char* next = strstr(p_this, old_data);
     if (next == NULL) {
       break;
@@ -94,7 +98,8 @@ Str* Str::replace(Str* old, Str* new_str) {
 Str* Str::join(List<Str*>* items) {
   int len = 0;
   const std::vector<Str*>& v = items->v_;
-  for (int i = 0; i < v.size(); ++i) {
+  int num_parts = v.size();
+  for (int i = 0; i < num_parts; ++i) {
     len += v[i]->len_;
   }
   // add length of all the separators
@@ -106,7 +111,7 @@ Str* Str::join(List<Str*>* items) {
   char* result = static_cast<char*>(malloc(len+1));
   char* p_result = result;  // advances through
 
-  for (int i = 0; i < v.size(); ++i) {
+  for (int i = 0; i < num_parts; ++i) {
     //log("i %d", i);
     if (i != 0 && len_) {  // optimize common case of ''.join()
       memcpy(p_result, data_, len_);  // copy the separator
@@ -139,7 +144,31 @@ namespace mylib {
 // LineReader
 //
 
-Str* kEmptyString = new Str("");
+LineReader* gStdin;
+
+Str* CFileLineReader::readline() {
+  char* line = nullptr;
+  size_t allocated_size = 0;  // unused
+
+  ssize_t len = getline(&line, &allocated_size, f_);
+  if (len < 0) {
+    //log("getline() result: %d", len);
+    // Why does tcmalloc mess up errno ???
+#ifndef TCMALLOC
+    if (errno != 0) {
+      // Unexpected error
+      log("getline() error: %s", strerror(errno));
+      throw new AssertionError(errno);
+    }
+#endif
+    // Expected EOF 
+    return kEmptyString;
+  }
+  //log("len = %d", len);
+
+  // Note: it's NUL terminated
+  return new Str(line, len);
+}
 
 // problem: most Str methods like index() and slice() COPY so they have a
 // NUL terminator.
@@ -178,6 +207,7 @@ Str* BufLineReader::readline() {
 //
 
 Writer* gStdout;
+Writer* gStderr;
 
 void BufWriter::write(Str* s) {
   int orig_len = len_;
@@ -213,6 +243,52 @@ void BufWriter::format_d(int i) {
   len_ += len;
 }
 
+// repr() calls this too
+void BufWriter::format_r(Str* s) {
+  // Worst case: \0 becomes 4 bytes as '\\x00', and then two quote bytes.
+  int upper_bound = s->len_*4 + 2;
+
+  // Extend the buffer
+  data_ = static_cast<char*>(realloc(data_, len_ + upper_bound + 1));
+
+  char quote = '\'';
+  if (memchr(s->data_, '\'', s->len_) && !memchr(s->data_, '"', s->len_)) {
+    quote = '"';
+  }
+  char *p = data_ + len_;  // end of valid data
+
+  // From PyString_Repr()
+  *p++ = quote;
+  for (int i = 0; i < s->len_; ++i) {
+    char c = s->data_[i];
+    if (c == quote || c == '\\') {
+      *p++ = '\\';
+      *p++ = c;
+    } else if (c == '\t') {
+      *p++ = '\\';
+      *p++ = 't';
+    } else if (c == '\n') {
+      *p++ = '\\';
+      *p++ = 'n';
+    } else if (c == '\r') {
+      *p++ = '\\';
+      *p++ = 'r';
+    } else if (c < ' ' || c >= 0x7f) {
+      sprintf(p, "\\x%02x", c & 0xff);
+      p += 4;
+    } else {
+      *p++ = c;
+    }
+  }
+  *p++ = quote;
+  *p = '\0';
+
+  len_ = p - data_;
+  // Shrink the buffer.  This is valid usage and GNU libc says it can actually
+  // release.
+  data_ = static_cast<char*>(realloc(data_, len_ + 1));
+}
+
 //void BufWriter::format_s(const char* s) {
 //  this->write_const(s, strlen(s));
 //}
@@ -232,6 +308,12 @@ bool CFileWriter::isatty() {
 // Free functions
 //
 
+Str* repr(Str* s) {
+  mylib::BufWriter f;
+  f.format_r(s);
+  return f.getvalue();
+}
+
 Str* str_concat(Str* a, Str* b) {
   int new_len = a->len_ + b->len_;
   char* buf = static_cast<char*>(malloc(new_len + 1));
@@ -245,17 +327,21 @@ Str* str_concat(Str* a, Str* b) {
 }
 
 Str* str_repeat(Str* s, int times) {
+  // Python allows -1 too, and Oil used that
+  if (times <= 0) {
+    return kEmptyString;
+  }
   int len = s->len_;
   int new_len = len * times;
-  char* data_ = static_cast<char*>(malloc(new_len + 1));
+  char* data = static_cast<char*>(malloc(new_len + 1));
 
-  char* dest = data_;
+  char* dest = data;
   for (int i = 0; i < times; i++) {
     memcpy(dest, s->data_, len);
     dest += len;
   }
-  data_[new_len] = '\0';
-  return new Str(data_, new_len);
+  data[new_len] = '\0';
+  return new Str(data, new_len);
 }
 
 // Helper for str_to_int() that doesn't use exceptions.
@@ -266,6 +352,8 @@ bool _str_to_int(Str* s, int* result) {
   }
 
   char* p;  // mutated by strtol
+
+  // cstring-TODO
   *result = strtol(s->data_, &p, 10);  // base 10
 
   // Return true if it consumed ALL characters.
@@ -292,6 +380,10 @@ int str_to_int(Str* s) {
   } else {
     throw std::exception();  // TODO: should be ValueError
   }
+}
+
+int str_to_int(Str* s, int base) {
+  assert(0);
 }
 
 //

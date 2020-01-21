@@ -1,5 +1,7 @@
 """
-ssyntax_abbrev.py - Abbreviations for pretty-printing syntax.asdl.
+syntax_abbrev.py - Abbreviations for pretty-printing syntax.asdl.
+
+This module is not used directly, but is combined with generated code.
 """
 
 from _devbuild.gen.id_kind_asdl import Id
@@ -8,7 +10,7 @@ from asdl import runtime
 
 
 def _AbbreviateToken(tok, out):
-  # type: (token, List[hnode_t]) -> None
+  # type: (Token, List[hnode_t]) -> None
   if tok.id != Id.Lit_Chars:
     n1 = runtime.NewLeaf(Id_str(tok.id), color_e.OtherConst)
     out.append(n1)
@@ -17,14 +19,26 @@ def _AbbreviateToken(tok, out):
   out.append(n2)
 
 
-def _token(obj):
-  # type: (token) -> hnode_t
+def _Token(obj):
+  # type: (Token) -> hnode_t
   p_node = runtime.NewRecord('')  # don't show node type
   p_node.abbrev = True
 
   p_node.left = '<'
   p_node.right = '>'
   _AbbreviateToken(obj, p_node.unnamed_fields)
+  return p_node
+
+
+def _compound_word(obj):
+  # type: (compound_word) -> hnode_t
+  p_node = runtime.NewRecord('')  # don't show node type
+  p_node.abbrev = True
+  p_node.left = '{'
+  p_node.right = '}'
+
+  for part in obj.parts:
+    p_node.unnamed_fields.append(part.AbbreviatedTree())
   return p_node
 
 
@@ -83,27 +97,6 @@ def _braced_var_sub(obj):
 
   p_node.abbrev = True
   _AbbreviateToken(obj.token, p_node.unnamed_fields)
-  return p_node
-
-
-def _word_part__Literal(obj):
-  # type: (word_part__Literal) -> hnode_t
-  p_node = runtime.NewRecord('')  # don't show node type
-  p_node.abbrev = True
-
-  _AbbreviateToken(obj.token, p_node.unnamed_fields)
-  return p_node
-
-
-def _word__Compound(obj):
-  # type: (word__Compound) -> hnode_t
-  p_node = runtime.NewRecord('')  # don't show node type
-  p_node.abbrev = True
-  p_node.left = '{'
-  p_node.right = '}'
-
-  for part in obj.parts:
-    p_node.unnamed_fields.append(part.AbbreviatedTree())
   return p_node
 
 

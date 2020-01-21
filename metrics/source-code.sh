@@ -10,7 +10,7 @@ set -o pipefail
 set -o errexit
 
 filter-py() {
-  grep -E -v '__init__.py$|_gen.py|_test.py$'
+  grep -E -v '__init__.py$|_gen.py|_test.py|_tests.py$'
 }
 
 readonly -a ASDL_FILES=( {frontend,osh}/*.asdl )
@@ -22,8 +22,12 @@ osh-files() {
   # - code generators
   # - test library
 
-  ls {bin,osh,core,frontend}/*.py native/*.c "${ASDL_FILES[@]}" \
+  ls bin/oil.py {osh,core,frontend}/*.py native/*.c "${ASDL_FILES[@]}" \
     | filter-py | grep -E -v 'posixmodule.c$|line_input.c$|_gen.py$|test_lib.py$'
+}
+
+oil-lang-files() {
+  ls oil_lang/*.{py,pgen2} | filter-py 
 }
 
 # cloc doesn't understand ASDL files.
@@ -113,7 +117,7 @@ all() {
   wc -l */*_gen.py | sort --numeric
   echo
 
-  echo 'GENERATED CODE (for appb undle)'
+  echo 'GENERATED CODE (for app bundle)'
   wc -l _devbuild/gen/*.{py,h} | sort --numeric
   echo
 
@@ -134,7 +138,7 @@ all() {
   echo
 
   echo 'OIL UNIT TESTS'
-  wc -l {osh,frontend,core,ovm2,native,tools}/*_test.py | sort --numeric
+  wc -l {osh,frontend,core,native,tools}/*_test.py | sort --numeric
   echo
 
   echo 'OSH (and common libraries)'
@@ -142,7 +146,7 @@ all() {
   echo
 
   echo 'Oil Language'
-  ls oil_lang/*.{py,pgen2} | filter-py | xargs wc -l | sort --numeric
+  oil-lang-files | xargs wc -l | sort --numeric
   echo
 
   cpp
@@ -153,17 +157,12 @@ all() {
   echo 'DOCS'
   wc -l README.md doc/* | sort --numeric
   echo
-
-  # Obsolete.  Delete this code/
-  echo 'OVM2'
-  wc -l ovm2/*.{py,cc} | filter-py | sort --numeric
-  echo
 }
 
 cpp() {
   # NOTE: Could exclude .re2c.h file
   echo '[ C++ ] Generated Code'
-  wc -l _devbuild/gen-cpp/*.{cc,h} _devbuild/gen/*.h | sort --numeric
+  wc -l _build/cpp/*.{cc,h} _devbuild/gen/*.h | sort --numeric
   echo
 
   echo '[ C++ ] Hand-Written Code'

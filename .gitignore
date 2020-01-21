@@ -17,5 +17,17 @@ fastlex.so
 libc.so
 line_input.so
 posix_.so
+yajl.so
 # Python build support
 build/temp.*
+
+# my own automation
+local.sh  
+
+NOTES*.txt
+*/NOTES*.txt
+TODO*.txt
+# uftrace creates this
+uftrace.data
+release-*.txt
+asdl.txt

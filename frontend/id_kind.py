@@ -152,12 +152,53 @@ class IdSpec(object):
 
 def AddKinds(spec):
   # type: (IdSpec) -> None
+
+  # A compound word, in arith context, boolean context, or command context.
+  # A['foo'] A["foo"] A[$foo] A["$foo"] A[${foo}] A["${foo}"]
+  spec.AddKind('Word', ['Compound'])
+
+  # Token IDs in Kind.Arith are first to make the TDOP precedence table small.
+  #
+  # NOTE: Could share Op_Pipe, Op_Amp, Op_DAmp, Op_Semi, Op_LParen, etc.
+  # Actually all of Arith could be folded into Op, because we are using
+  # WordParser._ReadArithWord vs. WordParser._ReadWord.
+  spec.AddKindPairs('Arith', [
+      ('Semi', ';'),   # ternary for loop only
+      ('Comma', ','),  # function call and C comma operator
+      ('Plus', '+'), ('Minus', '-'), ('Star', '*'), ('Slash', '/'),
+      ('Percent', '%'),
+      ('DPlus', '++'), ('DMinus', '--'), ('DStar', '**'),
+      ('LParen', '('), ('RParen', ')'),  # grouping and function call extension
+      ('LBracket', '['), ('RBracket', ']'),  # array and assoc array subscript
+      ('RBrace', '}'),  # for end of var sub
+
+      # Logical Ops
+      ('QMark', '?'), ('Colon', ':'),  # Ternary Op: a < b ? 0 : 1
+      ('LessEqual', '<='), ('Less', '<'), ('GreatEqual', '>='), ('Great', '>'),
+      ('DEqual', '=='), ('NEqual', '!='),
+      # note: these 3 are not in Oil's Expr.  (Could be used in find dialect.)
+      ('DAmp', '&&'), ('DPipe', '||'), ('Bang', '!'),
+
+      # Bitwise ops
+      ('DGreat', '>>'), ('DLess', '<<'),
+      # Oil: ^ is exponent
+      ('Amp', '&'), ('Pipe', '|'), ('Caret', '^'), ('Tilde', '~'),
+
+      # 11 mutating operators:  =  +=  -=  etc.
+      ('Equal', '='),
+      ('PlusEqual', '+='), ('MinusEqual', '-='), ('StarEqual', '*='),
+      ('SlashEqual', '/='), ('PercentEqual', '%='),
+      ('DGreatEqual', '>>='), ('DLessEqual', '<<='),
+      ('AmpEqual', '&='), ('PipeEqual', '|='),
+      ('CaretEqual', '^=')
+  ])
+
+  spec.AddKind('Eof', ['Real', 'RParen', 'Backtick'])
+
   # TODO: Unknown_Tok is OK, but Undefined_Id is better
   spec.AddKind('Undefined', ['Tok'])  # for initial state
   spec.AddKind('Unknown',   ['Tok'])  # for when nothing matches
   spec.AddKind('Eol',       ['Tok'])  # no more tokens on line (\0)
-
-  spec.AddKind('Eof', ['Real', 'RParen', 'Backtick'])
 
   spec.AddKind('Ignored', ['LineCont', 'Space', 'Comment'])
 
@@ -381,39 +422,10 @@ def AddKinds(spec):
       ('RBracket',      ']'),  #  ] for indexing
   ])
 
-  # Operators
-  # NOTE: Could share Op_Pipe, Op_Amp, Op_DAmp, Op_Semi, Op_LParen, etc.
-  # Actually all of Arith could be folded into Op, because we are using
-  # WordParser._ReadArithWord vs. WordParser._ReadWord.
-  spec.AddKindPairs('Arith', [
-      ('Semi', ';'),   # ternary for loop only
-      ('Comma', ','),  # function call and C comma operator
-      ('Plus', '+'), ('Minus', '-'), ('Star', '*'), ('Slash', '/'),
-      ('Percent', '%'),
-      ('DPlus', '++'), ('DMinus', '--'), ('DStar', '**'),
-      ('LParen', '('), ('RParen', ')'),  # grouping and function call extension
-      ('LBracket', '['), ('RBracket', ']'),  # array and assoc array subscript
-      ('RBrace', '}'),  # for end of var sub
-
-      # Logical Ops
-      ('QMark', '?'), ('Colon', ':'),  # Ternary Op: a < b ? 0 : 1
-      ('LessEqual', '<='), ('Less', '<'), ('GreatEqual', '>='), ('Great', '>'),
-      ('DEqual', '=='), ('NEqual', '!='),
-      # note: these 3 are not in Oil's Expr.  (Could be used in find dialect.)
-      ('DAmp', '&&'), ('DPipe', '||'), ('Bang', '!'),
-
-      # Bitwise ops
-      ('DGreat', '>>'), ('DLess', '<<'),
-      # Oil: ^ is exponent
-      ('Amp', '&'), ('Pipe', '|'), ('Caret', '^'), ('Tilde', '~'),
-
-      # 11 mutating operators:  =  +=  -=  etc.
-      ('Equal', '='),
-      ('PlusEqual', '+='), ('MinusEqual', '-='), ('StarEqual', '*='),
-      ('SlashEqual', '/='), ('PercentEqual', '%='),
-      ('DGreatEqual', '>>='), ('DLessEqual', '<<='),
-      ('AmpEqual', '&='), ('PipeEqual', '|='),
-      ('CaretEqual', '^=')
+  # Can only occur after ${!prefix@}
+  spec.AddKindPairs('VOp3', [
+      ('At',         '@'),
+      ('Star',       '*'),
   ])
 
   # This kind is for Node types that are NOT tokens.
@@ -427,10 +439,6 @@ def AddKinds(spec):
      'NotIn', 'IsNot',           # For Oil comparisons
   ])
 
-  # A compound word, in arith context, boolean context, or command context.
-  # A['foo'] A["foo"] A[$foo] A["$foo"] A[${foo}] A["${foo}"]
-  spec.AddKind('Word', ['Compound'])
-
   # NOTE: Not doing AddKindPairs() here because oil will have a different set
   # of keywords.  It will probably have for/in/while/until/case/if/else/elif,
   # and then func/proc.
@@ -441,12 +449,11 @@ def AddKinds(spec):
       'Time',
 
       # Oil keywords.
+      # should 'const' be 'let'?
       'Const', 'Set', 'Var', 'Auto', # assignment
       'SetVar',  # for OSH compatibility
       'Proc', 'Func',
-
-      # for printing
-      'Pass', 'Pp',
+      'Pass',  # for printing
 
       'Match', 'With',  # matching
       # not sure: yield
@@ -472,7 +479,6 @@ def AddKinds(spec):
       'Star', 'QMark', 'Bang', 'Caret',
       'EscapedChar', 'BadBackslash',
       'CleanLiterals', 'OtherLiteral',
-      'Eof',
   ])
 
   # For C-escaped strings.
@@ -487,7 +493,7 @@ def AddKinds(spec):
       'Subst', 'Octal3', 'LBrace', 'RBrace', 'Literals', 'BadBackslash',
   ])
 
-  spec.AddKind('Range', ['Int', 'Char', 'Dots', 'Other', 'Eof'])
+  spec.AddKind('Range', ['Int', 'Char', 'Dots', 'Other'])
 
 
 # Shared between [[ and test/[.

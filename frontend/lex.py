@@ -197,7 +197,6 @@ _KEYWORDS = [
   C('func',     Id.KW_Func),
   C('proc',     Id.KW_Proc),
   C('pass',     Id.KW_Pass),
-  C('pp',       Id.KW_Pp),
 ]
 
 # These are treated like builtins in bash, but keywords in OSH.  However, we
@@ -557,7 +556,8 @@ LEXER_DEF[lex_mode_e.VSub_2] = \
     ID_SPEC.LexerPairs(Kind.VTest) + \
     ID_SPEC.LexerPairs(Kind.VOp0) + \
     ID_SPEC.LexerPairs(Kind.VOp1) + \
-    ID_SPEC.LexerPairs(Kind.VOp2) + [
+    ID_SPEC.LexerPairs(Kind.VOp2) + \
+    ID_SPEC.LexerPairs(Kind.VOp3) + [
   C('}', Id.Right_DollarBrace),
 
   C('\\\n', Id.Ignored_LineCont),
@@ -797,7 +797,7 @@ LEXER_DEF[lex_mode_e.Expr] = \
     _VARS + OIL_LEFT_SUBS + OIL_LEFT_UNQUOTED + EXPR_OPS + EXPR_WORDS + \
     EXPR_CHARS + [
 
-  # https://docs.python.org/3/reference/lexical_analysis.html#literals
+  # https://docs.python.org/3/reference/lexical_analysis.html#integer-literals
   #
   # integer      ::=  decinteger | bininteger | octinteger | hexinteger
   # decinteger   ::=  nonzerodigit (["_"] digit)* | "0"+ (["_"] "0")*

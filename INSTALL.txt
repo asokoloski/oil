@@ -4,16 +4,15 @@ Building and Installing OSH
 OSH is a bash-compatible shell, and is part of the Oil project
 (http://www.oilshell.org).
 
-This file describes how to install OSH.  (It's in the release tarball and also
-published on the web.)
+This file describes how to configure, build, and install it from source code.
 
 Quick Start
 -----------
 
 If you haven't already done so, extract the tarball:
  
-    tar -x --xz < oil-0.7.pre5.tar.xz
-    cd oil-0.7.pre5
+    tar -x --xz < oil-0.7.0.tar.xz
+    cd oil-0.7.0
 
 Either install as /usr/local/bin/osh:
 
@@ -34,7 +33,7 @@ The latter doesn't require root access, but it requires:
   (See manpath or $MANPATH.)
 
 NOTE: Out-of-tree builds are NOT currently supported, so you have to be in the
-oil-0.7.pre5 directory.
+oil-0.7.0 directory.
 
 Smoke Test
 ----------
@@ -53,7 +52,7 @@ More Documentation
 
 Every release has a home page with links, e.g.
 
-    https://oilshell.org/release/0.7.pre5/
+    https://oilshell.org/release/0.7.pre6/
 
 System Requirements
 -------------------

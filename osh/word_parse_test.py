@@ -12,15 +12,13 @@ word_parse_test.py: Tests for word_parse.py
 import unittest
 
 from _devbuild.gen.id_kind_asdl import Id
-from _devbuild.gen.syntax_asdl import arith_expr_e, word_part, token
-from _devbuild.gen.syntax_asdl import word
+from _devbuild.gen.syntax_asdl import arith_expr_e, compound_word
 from _devbuild.gen.types_asdl import lex_mode_e
 
 from asdl import runtime
-
+from core import error
 from core import test_lib
-from core import util
-
+from core.test_lib import Tok
 from osh import word_
 
 
@@ -32,8 +30,7 @@ def _assertReadWordWithArena(test, w_parser):
   # Next word must be Eof_Real
   w2 = w_parser.ReadWord(lex_mode_e.ShCommand)
   test.assertTrue(
-      test_lib.TokenWordsEqual(
-          word.Token(token(Id.Eof_Real, '')), w2),
+      test_lib.TokensEqual(Tok(Id.Eof_Real, ''), w2),
       w2)
   return w
 
@@ -51,7 +48,7 @@ def _assertReadWordFailure(test, word_str, oil_at=False):
   w_parser = test_lib.InitWordParser(word_str, oil_at=oil_at)
   try:
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-  except util.ParseError as e:
+  except error.Parse as e:
     print('Got expected ParseError: %s' % e)
   else:
     w.PrettyPrint()
@@ -393,23 +390,23 @@ class WordParserTest(unittest.TestCase):
     w_parser = test_lib.InitWordParser(code)
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual('foo', w.parts[0].token.val)
+    self.assertEqual('foo', w.parts[0].val)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual(Id.Op_Newline, w.token.id)
+    self.assertEqual(Id.Op_Newline, w.id)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual('bar', w.parts[0].token.val)
+    self.assertEqual('bar', w.parts[0].val)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual(Id.Op_Newline, w.token.id)
+    self.assertEqual(Id.Op_Newline, w.id)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual(Id.Eof_Real, w.token.id)
+    self.assertEqual(Id.Eof_Real, w.id)
 
   def testReadRegex(self):
     # Test that we get Id.Op_Newline
@@ -419,16 +416,16 @@ class WordParserTest(unittest.TestCase):
 
     w = w_parser.ReadWord(lex_mode_e.BashRegex)
     assert w
-    self.assertEqual('(', w.parts[0].token.val)
-    self.assertEqual('foo', w.parts[1].token.val)
-    self.assertEqual('|', w.parts[2].token.val)
-    self.assertEqual('bar', w.parts[3].token.val)
-    self.assertEqual(')', w.parts[4].token.val)
+    self.assertEqual('(', w.parts[0].val)
+    self.assertEqual('foo', w.parts[1].val)
+    self.assertEqual('|', w.parts[2].val)
+    self.assertEqual('bar', w.parts[3].val)
+    self.assertEqual(')', w.parts[4].val)
     self.assertEqual(5, len(w.parts))
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
     assert w
-    self.assertEqual(Id.Eof_Real, w.token.id)
+    self.assertEqual(Id.Eof_Real, w.id)
 
   def testReadArithWord(self):
     w = _assertReadWord(self, '$(( (1+2) ))')
@@ -493,32 +490,32 @@ ls bar
 """)
     print('--MULTI')
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    parts = [word_part.Literal(token(Id.Lit_Chars, 'ls'))]
-    test_lib.AssertAsdlEqual(self, word.Compound(parts), w)
+    parts = [Tok(Id.Lit_Chars, 'ls')]
+    test_lib.AssertAsdlEqual(self, compound_word(parts), w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    parts = [word_part.Literal(token(Id.Lit_Chars, 'foo'))]
-    test_lib.AssertAsdlEqual(self, word.Compound(parts), w)
+    parts = [Tok(Id.Lit_Chars, 'foo')]
+    test_lib.AssertAsdlEqual(self, compound_word(parts), w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    t = token(Id.Op_Newline, '\n')
-    test_lib.AssertAsdlEqual(self, word.Token(t), w)
+    t = Tok(Id.Op_Newline, None)
+    test_lib.AssertAsdlEqual(self, t, w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    parts = [word_part.Literal(token(Id.Lit_Chars, 'ls'))]
-    test_lib.AssertAsdlEqual(self, word.Compound(parts), w)
+    parts = [Tok(Id.Lit_Chars, 'ls')]
+    test_lib.AssertAsdlEqual(self, compound_word(parts), w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    parts = [word_part.Literal(token(Id.Lit_Chars, 'bar'))]
-    test_lib.AssertAsdlEqual(self, word.Compound(parts), w)
+    parts = [Tok(Id.Lit_Chars, 'bar')]
+    test_lib.AssertAsdlEqual(self, compound_word(parts), w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    t = token(Id.Op_Newline, '\n')
-    test_lib.AssertAsdlEqual(self, word.Token(t), w)
+    t = Tok(Id.Op_Newline, None)
+    test_lib.AssertAsdlEqual(self, t, w)
 
     w = w_parser.ReadWord(lex_mode_e.ShCommand)
-    t = token(Id.Eof_Real, '')
-    test_lib.AssertAsdlEqual(self, word.Token(t), w)
+    t = Tok(Id.Eof_Real, '')
+    test_lib.AssertAsdlEqual(self, t, w)
 
   def testParseErrorLocation(self):
     w = _assertSpanForWord(self, 'a=(1 2 3)')

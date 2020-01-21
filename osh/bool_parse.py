@@ -32,34 +32,23 @@ BINARY_OP: -gt, -ot, ==, etc.
 
 from _devbuild.gen.id_kind_asdl import Id, Kind
 from _devbuild.gen.types_asdl import lex_mode_t, lex_mode_e
-from _devbuild.gen.syntax_asdl import (
-    word_t, word__Compound, word__String,
-    bool_expr, bool_expr_t,
-)
+from _devbuild.gen.syntax_asdl import word_t, word_e, bool_expr, bool_expr_t
+from core.util import p_die
 from frontend import lookup
 from osh import word_
-from core.util import p_die
-
 
 from typing import List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-  from osh.word_parse import WordParser
+  from osh.word_parse import WordEmitter
 
-#try:
-#  import libc  # for regex_parse
-#except ImportError:
-#  from benchmarks import fake_libc as libc
+# import libc  # for regex_parse
 
 
 class BoolParser(object):
   """Parses [[ at compile time and [ at runtime."""
 
   def __init__(self, w_parser):
-    # type: (WordParser) -> None
-    """
-    Args:
-      w_parser: WordParser
-    """
+    # type: (WordEmitter) -> None
     self.w_parser = w_parser
     # Either one word or two words for lookahead
     self.words = []  # type: List[word_t]
@@ -75,7 +64,7 @@ class BoolParser(object):
       assert lex_mode == lex_mode_e.DBracket
       self.words[0] = self.words[1]
       self.cur_word = self.words[0]
-      del self.words[1]
+      self.words.pop()
     elif n in (0, 1):
       w = self.w_parser.ReadWord(lex_mode)  # may raise
       if n == 0:
@@ -107,7 +96,7 @@ class BoolParser(object):
     # type: () -> word_t
     n = len(self.words)
     if n != 1:
-      raise AssertionError(self.words)
+      raise AssertionError(n)
 
     w = self.w_parser.ReadWord(lex_mode_e.DBracket)  # may raise
     self.words.append(w)  # Save it for _Next()
@@ -203,7 +192,9 @@ class BoolParser(object):
       self._Next()
       w = self.cur_word
       # e.g. [[ -f < ]].  But [[ -f '<' ]] is OK
-      if not isinstance(w, (word__Compound, word__String)):
+
+      tag = w.tag_()
+      if tag != word_e.Compound and tag != word_e.String:
         p_die('Invalid argument to unary operator', word=w)
       self._Next()
       node = bool_expr.Unary(op, w)  # type: bool_expr_t

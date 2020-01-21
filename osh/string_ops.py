@@ -9,14 +9,20 @@ Instead of:
 """
 
 from _devbuild.gen.id_kind_asdl import Id
+from core import error
 from core import util
 from core.util import e_die
 from osh import glob_
 
 import libc
 
+from typing import List, Tuple, TYPE_CHECKING
+if TYPE_CHECKING:
+  from _devbuild.gen.syntax_asdl import suffix_op__Unary, suffix_op__PatSub
+
 
 def Utf8Encode(code):
+  # type: (int) -> str
   """Return utf-8 encoded bytes from a unicode code point.
 
   Based on https://stackoverflow.com/a/23502707
@@ -57,41 +63,99 @@ INVALID_START = 'Invalid start of UTF-8 character'
 
 
 def _CheckContinuationByte(byte):
+  # type: (str) -> None
   if (ord(byte) >> 6) != 0b10:
-    raise util.InvalidUtf8(INVALID_CONT)
+    raise error.InvalidUtf8(INVALID_CONT)
+
+
+def _Utf8CharLen(starting_byte):
+  # type: (int) -> int
+  if (starting_byte >> 7) == 0b0:
+    return 1
+  elif (starting_byte >> 5) == 0b110:
+    return 2
+  elif (starting_byte >> 4) == 0b1110:
+    return 3
+  elif (starting_byte >> 3) == 0b11110:
+    return 4
+  else:
+    raise error.InvalidUtf8(INVALID_START)
 
 
 def _NextUtf8Char(s, i):
+  # type: (str, int) -> int
   """
-  Given a string and a byte offset, returns the byte position of the next char.
+  Given a string and a byte offset, returns the byte position after
+  the character at this position.  Usually this is the position of the
+  next character, but for the last character in the string, it's the
+  position just past the end of the string.
+
   Validates UTF-8.
   """
   byte_as_int = ord(s[i])  # Should never raise IndexError
 
   try:
-    if (byte_as_int >> 7) == 0b0:
-      i += 1
-    elif (byte_as_int >> 5) == 0b110:
-      _CheckContinuationByte(s[i+1])
-      i += 2
-    elif (byte_as_int >> 4) == 0b1110:
-      _CheckContinuationByte(s[i+1])
-      _CheckContinuationByte(s[i+2])
-      i += 3
-    elif (byte_as_int >> 3) == 0b11110:
-      _CheckContinuationByte(s[i+1])
-      _CheckContinuationByte(s[i+2])
-      _CheckContinuationByte(s[i+3])
-      i += 4
-    else:
-      raise util.InvalidUtf8(INVALID_START)
+    length = _Utf8CharLen(byte_as_int)
+    for j in xrange(i + 1, i + length):
+      _CheckContinuationByte(s[j])
+    i += length
   except IndexError:
-    raise util.InvalidUtf8(INCOMPLETE_CHAR)
+    raise error.InvalidUtf8(INCOMPLETE_CHAR)
 
   return i
 
 
+def _PreviousUtf8Char(s, i):
+  # type: (str, int) -> int
+  """
+  Given a string and a byte offset, returns the position of the
+  character before that offset.  To start (find the first byte of the
+  last character), pass len(s) for the initial value of i.
+
+  Validates UTF-8.
+  """
+  # All bytes in a valid UTF-8 string have one of the following formats:
+  #
+  #   0xxxxxxx (1-byte char)
+  #   110xxxxx (start of 2-byte char)
+  #   1110xxxx (start of 3-byte char)
+  #   11110xxx (start of 4-byte char)
+  #   10xxxxxx (continuation byte)
+  #
+  # Any byte that starts with 10... MUST be a continuation byte,
+  # otherwise it must be the start of a character (or just invalid
+  # data).
+  #
+  # Walking backward, we stop at the first non-continuaton byte
+  # found.  We try to interpret it as a valid UTF-8 character starting
+  # byte, and check that it indicates the correct length, based on how
+  # far we've moved from the original byte.  Possible problems:
+  #   * byte we stopped on does not have a valid value (e.g., 11111111)
+  #   * start byte indicates more or fewer continuation bytes than we've seen
+  #   * no start byte at beginning of array
+  #
+  # Note that because we are going backward, on malformed input, we
+  # won't error out in the same place as when parsing the string
+  # forwards as normal.
+  orig_i = i
+
+  while i > 0:
+    i -= 1
+    byte_as_int = ord(s[i])
+    if (byte_as_int >> 6) != 0b10:
+      offset = orig_i - i
+      if offset != _Utf8CharLen(byte_as_int):
+        # Leaving a generic error for now, but if we want to, it's not
+        # hard to calculate the position where things go wrong.  Note
+        # that offset might be more than 4, for an invalid utf-8 string.
+        raise error.InvalidUtf8(INVALID_START)
+      return i
+
+  raise error.InvalidUtf8(INVALID_START)
+
+
 def CountUtf8Chars(s):
+  # type: (str) -> int
   """Returns the number of utf-8 characters in the byte string 's'.
 
   TODO: Raise exception rather than returning a string, so we can set the exit
@@ -112,6 +176,7 @@ def CountUtf8Chars(s):
 
 
 def AdvanceUtf8Chars(s, num_chars, byte_offset):
+  # type: (str, int, int) -> int
   """
   Advance a certain number of UTF-8 chars, beginning with the given byte
   offset.  Returns a byte offset.
@@ -162,6 +227,7 @@ def AdvanceUtf8Chars(s, num_chars, byte_offset):
 #   - Compile time errors for [[:space:]] ?
 
 def DoUnarySuffixOp(s, op, arg):
+  # type: (str, suffix_op__Unary, str) -> str
   """Helper for ${x#prefix} and family."""
 
   # Fast path for constant strings.
@@ -190,7 +256,10 @@ def DoUnarySuffixOp(s, op, arg):
     elif op.op_id == Id.VOp1_Comma:  # Only lowercase the first letter
       if arg != '':
         raise NotImplementedError("%s can't have an argument" % op.op_id)
-      return s[0].lower() + s[1:]
+      if len(s):
+        return s[0].lower() + s[1:]
+      else:
+        return s
 
     elif op.op_id == Id.VOp1_DComma:
       if arg != '':
@@ -200,7 +269,10 @@ def DoUnarySuffixOp(s, op, arg):
     elif op.op_id == Id.VOp1_Caret:  # Only uppercase the first letter
       if arg != '':
         raise NotImplementedError("%s can't have an argument" % op.op_id)
-      return s[0].upper() + s[1:]
+      if len(s):
+        return s[0].upper() + s[1:]
+      else:
+        return s
 
     elif op.op_id == Id.VOp1_DCaret:
       if arg != '':
@@ -213,10 +285,6 @@ def DoUnarySuffixOp(s, op, arg):
   # For patterns, do fnmatch() in a loop.
   #
   # TODO:
-  # - The loop needs to iterate over code points, not bytes!
-  #   - The forward case can probably be handled in a similar manner.
-  #   - The backward case might be handled by pre-calculating an array of start
-  #     positions with _NextUtf8Char.
   # - Another potential fast path:
   #   v=aabbccdd
   #   echo ${v#*b}  # strip shortest prefix
@@ -231,41 +299,53 @@ def DoUnarySuffixOp(s, op, arg):
   if op.op_id == Id.VOp1_Pound:  # shortest prefix
     # 'abcd': match '', 'a', 'ab', 'abc', ...
     i = 0
-    while i <= n:
+    while True:
+      assert i <= n
       #log('Matching pattern %r with %r', arg, s[:i])
       if libc.fnmatch(arg, s[:i]):
         return s[i:]
-      i += 1
+      if i >= n:
+        break
+      i = _NextUtf8Char(s, i)
     return s
 
   elif op.op_id == Id.VOp1_DPound:  # longest prefix
     # 'abcd': match 'abc', 'ab', 'a'
     i = n
-    while i >= 0:
+    while True:
+      assert i >= 0
       #log('Matching pattern %r with %r', arg, s[:i])
       if libc.fnmatch(arg, s[:i]):
         return s[i:]
-      i -= 1
+      if i == 0:
+        break
+      i = _PreviousUtf8Char(s, i)
     return s
 
   elif op.op_id == Id.VOp1_Percent:  # shortest suffix
     # 'abcd': match 'abcd', 'abc', 'ab', 'a'
     i = n
-    while i >= 0:
+    while True:
+      assert i >= 0
       #log('Matching pattern %r with %r', arg, s[:i])
       if libc.fnmatch(arg, s[i:]):
         return s[:i]
-      i -= 1
+      if i == 0:
+        break
+      i = _PreviousUtf8Char(s, i)
     return s
 
   elif op.op_id == Id.VOp1_DPercent:  # longest suffix
     # 'abcd': match 'abc', 'bc', 'c', ...
     i = 0
-    while i <= n:
+    while True:
+      assert i <= n
       #log('Matching pattern %r with %r', arg, s[:i])
       if libc.fnmatch(arg, s[i:]):
         return s[:i]
-      i += 1
+      if i >= n:
+        break
+      i = _NextUtf8Char(s, i)
     return s
 
   else:
@@ -273,6 +353,7 @@ def DoUnarySuffixOp(s, op, arg):
 
 
 def _AllMatchPositions(s, regex):
+  # type: (str, str) -> List[Tuple[int, int]]
   """Returns a list of all (start, end) match positions of the regex against s.
 
   (If there are no matches, it returns the empty list.)
@@ -291,6 +372,7 @@ def _AllMatchPositions(s, regex):
 
 
 def _PatSubAll(s, regex, replace_str):
+  # type: (str, str, str) -> str
   parts = []
   prev_end = 0
   for start, end in _AllMatchPositions(s, regex):
@@ -304,6 +386,8 @@ def _PatSubAll(s, regex, replace_str):
 class GlobReplacer(object):
 
   def __init__(self, regex, replace_str, slash_spid):
+    # type: (str, str, int) -> None
+
     # TODO: It would be nice to cache the compilation of the regex here,
     # instead of just the string.  That would require more sophisticated use of
     # the Python/C API in libc.c, which we might want to avoid.
@@ -312,9 +396,12 @@ class GlobReplacer(object):
     self.slash_spid = slash_spid
 
   def __repr__(self):
+    # type: () -> str
     return '<_GlobReplacer regex %r r %r>' % (self.regex, self.replace_str)
 
   def Replace(self, s, op):
+    # type: (str, suffix_op__PatSub) -> str
+
     regex = '(%s)' % self.regex  # make it a group
 
     if op.replace_mode == Id.Lit_Slash:
@@ -339,6 +426,7 @@ class GlobReplacer(object):
 # TODO: Replace with ShellQuoteOneLine?  It may need more testing and
 # optimization.
 def ShellQuote(s):
+  # type: (str) -> str
   """Quote 's' in a way that can be reused as shell input.
 
   It doesn't necessarily match bash byte-for-byte.  IIRC bash isn't consistent
@@ -357,6 +445,8 @@ def ShellQuote(s):
 
 
 def ShellQuoteOneLine(s):
+  # type: (str) -> str
+
   # TODO: Could use a regex to speed this up
   needs_dollar = False
   for c in s:
@@ -377,6 +467,7 @@ def ShellQuoteOneLine(s):
 
 
 def ShellQuoteB(s):
+  # type: (str) -> str
   """Quote by adding backslashes.
 
   Used for autocompletion, so it's friendlier for display on the command line.
@@ -395,5 +486,4 @@ def ShellQuoteB(s):
   # {} for brace expansion
   # space because it separates words
   return util.BackslashEscape(s, ' `~!$&*()[]{}\\|;\'"<>?')
-
 

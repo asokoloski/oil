@@ -93,7 +93,7 @@ shopt -s oil:all
 var mylist = [1,2,3]
 setvar mylist[1] = 42
 
-echo -sep ' ' @mylist
+write  -sep ' ' @mylist
 ## STDOUT:
 1 42 3
 ## END
@@ -121,7 +121,7 @@ func f() {
   return mylist
 }
 setvar f()[2] = 42
-echo @mylist
+write @mylist
 ## STDOUT:
 1
 2
@@ -163,5 +163,32 @@ f
 f=1
 f=shell
 f=setvar
+## END
+
+
+#### circular dict
+var d = {name: 'foo'}
+= d
+setvar d['name'] = 123
+= d
+setvar d['name'] = 'mystr'
+= d
+setvar d['name'] = d
+= d
+## STDOUT:
+(Dict)   {'name': 'foo'}
+(Dict)   {'name': 123}
+(Dict)   {'name': 'mystr'}
+(Dict)   {'name': {...}}
+## END
+
+#### circular list
+var L = [1,2,3]
+= L
+setvar L[0] = L
+= L
+## STDOUT:
+(List)   [1, 2, 3]
+(List)   [[...], 2, 3]
 ## END
 

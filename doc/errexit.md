@@ -1,51 +1,58 @@
+---
+in_progress: yes
+---
+
 set -e / errexit in shell
 =========================
 
-Problem:
+<div id="toc">
+</div>
 
-Solution in Shell
+<!-- TODO: copy section from OSH manual -->
+
+## Problem
+
+### Solution in Shell
+
+    set +o errexit
+
+    my-complex-func
+    status=$?
+
+    other-func
+    status=$?
+
+    set -o errexit
 
 
-Solution Oil:
+### Solution Oil
 
+    shopt -u errexit {
+      var status = 0 
 
-shopt -u errexit {
-  my-big-func 
-  other-func
+      my-complex-func
+      setvar status = $?
 
-  var status = $?
-}
+      other-func
+      setvar status = $?
+    }
 
-
-shopt -u errexit {
-  var status = 0 
-
-  my-big-func || setvar status = $?
-  other-func || setvar status = $?
-
-  var status = $?
-}
-
-Style Guide
------------
+## Style Guide
 
 No:
 
-  if myfunc ...
+    if myfunc ...             # internal exit codes would be thrown away
 
-  if ls | wc -l ;   # pipelines, no
+    if ls | wc -l ;           # first exit code would be thrown away
 
 
 Yes:
 
-  if external-command ...  (grep)
-  if builtin  (test)
-  if $0 myfunc
+    if external-command ...   # e.g. grep
+    if builtin ...            # e.g. test
+    if $0 myfunc ...          # $0 pattern
 
 
-It behaves just like an external command.
+The `$0 myfunc` pattern wraps the function in an external command.
 
-
-
-
-
+<!-- TODO: link to blog post explaining it -->

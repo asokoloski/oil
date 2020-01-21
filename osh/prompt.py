@@ -10,12 +10,12 @@ import pwd
 from _devbuild.gen.id_kind_asdl import Id
 from _devbuild.gen.runtime_asdl import value_e, value_t
 from _devbuild.gen.syntax_asdl import (
-    command_t, source, word__Compound
+    command_t, source, compound_word
 )
 from asdl import runtime
 from core import main_loop
+from core import error
 from core import ui
-from core import util
 from frontend import match
 from frontend import reader
 from osh import word_
@@ -114,7 +114,7 @@ class Evaluator(object):
     # These caches should reduce memory pressure a bit.  We don't want to
     # reparse the prompt twice every time you hit enter.
     self.tokens_cache = {}  # type: Dict[str, List[Tuple[Id, str]]]
-    self.parse_cache = {}  # type: Dict[str, word__Compound]
+    self.parse_cache = {}  # type: Dict[str, compound_word]
 
   def _ReplaceBackslashCodes(self, tokens):
     # type: (List[Tuple[Id, str]]) -> str
@@ -198,7 +198,7 @@ class Evaluator(object):
     try:
       tokens = self.tokens_cache[val.s]
     except KeyError:
-      tokens = list(match.PS1_LEXER.Tokens(val.s))
+      tokens = match.Ps1Tokens(val.s)
       self.tokens_cache[val.s] = tokens
 
     # Replace values.
@@ -213,7 +213,7 @@ class Evaluator(object):
       w_parser = self.parse_ctx.MakeWordParserForPlugin(ps1_str)
       try:
         ps1_word = w_parser.ReadForPlugin()
-      except util.ParseError as e:
+      except error.Parse as e:
         ps1_word = word_.ErrorWord("<ERROR: Can't parse PS1: %s>", e)
       self.parse_cache[ps1_str] = ps1_word
 
@@ -267,7 +267,7 @@ class UserPlugin(object):
       try:
         try:
           node = main_loop.ParseWholeFile(c_parser)
-        except util.ParseError as e:
+        except error.Parse as e:
           ui.PrettyPrintError(e, self.arena)
           return  # don't execute
       finally:

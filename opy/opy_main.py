@@ -31,8 +31,6 @@ from frontend import args
 from core.util import log
 from core import pyutil
 
-from ovm2 import oheap2
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -358,18 +356,11 @@ def OpyCommandMain(argv):
     py_path = argv[0]
     with open(py_path) as f:
       tokens = tokenize.generate_tokens(f.readline)
-      p = parse.Parser(gr, convert=skeleton.py2st)
-      parse_tree = driver.PushTokens(p, tokens, gr, 'file_input')
+      p = parse.Parser(gr)
+      pnode  = driver.PushTokens(p, tokens, gr, 'file_input')
 
-    if isinstance(parse_tree, tuple):
-      n = CountTupleTree(parse_tree)
-      log('COUNT %d', n)
-
-      printer = TupleTreePrinter(transformer._names)
-      printer.Print(parse_tree)
-    else:
-      tree.PrettyPrint(sys.stdout)
-      log('\tChildren: %d' % len(tree.children), file=sys.stderr)
+    printer = ParseTreePrinter(transformer._names)  # print raw nodes
+    printer.Print(pnode)
 
   # Parse with an arbitrary grammar, but the Python lexer.
   elif action == 'parse-with':
@@ -438,6 +429,8 @@ def OpyCommandMain(argv):
       marshal.dump(co, out_f)
 
   elif action == 'compile-ovm':
+    # NOTE: obsolete
+    from ovm2 import oheap2
     opt, i = compile_spec.ParseArgv(argv)
     py_path = argv[i]
     out_path = argv[i+1]

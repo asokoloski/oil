@@ -47,6 +47,11 @@ void test_str_to_int() {
 }
 
 void test_str_funcs() {
+  assert(!(new Str(""))->isupper());
+  assert(!(new Str("a"))->isupper());
+  assert((new Str("A"))->isupper());
+  assert((new Str("AB"))->isupper());
+
   assert((new Str("abc"))->isalpha());
 
   Str* s = new Str("abc");
@@ -69,6 +74,39 @@ void test_str_funcs() {
   log("i = %s", int_str->data_);
   int_str = str(-(1<<31));
   log("i = %s", int_str->data_);
+
+  log("--- rstrip()");
+  Str* s2 = new Str(" abc ");
+  log("s2.rstrip()  = [%s]", s2->rstrip()->data_);
+
+  Str* s3 = new Str(" abc");
+  log("s3.rstrip()  = [%s]", s3->rstrip()->data_);
+  Str* s4 = new Str("");
+  log("s4.rstrip()  = [%s]", s4->rstrip()->data_);
+
+  log("s.startswith('') = %d", s->startswith(new Str("")));
+  log("s.startswith('ab') = %d", s->startswith(new Str("ab")));
+  log("s.startswith('bc') = %d", s->startswith(new Str("bc")));
+
+  log("s.endswith('') = %d", s->endswith(new Str("")));
+  log("s.endswith('ab') = %d", s->endswith(new Str("ab")));
+  log("s.endswith('bc') = %d", s->endswith(new Str("bc")));
+
+  log("repr %s", repr(new Str(""))->data_);
+  log("repr %s", repr(new Str("'"))->data_);
+  log("repr %s", repr(new Str("'single'"))->data_);
+  log("repr %s", repr(new Str("\"double\""))->data_);
+
+  // this one is truncated
+  const char* n_str = "NUL \x00 NUL";
+  int n_len = 9;  // 9 bytes long
+  log("repr %s", repr(new Str(n_str, n_len))->data_);
+  log("len %d", len(repr(new Str(n_str, n_len))));
+
+  log("repr %s", repr(new Str("tab\tline\nline\r\n"))->data_);
+  log("repr %s", repr(new Str("high \xFF \xFE high"))->data_);
+
+  log("ord('A') = %d", ord(new Str("A")));
 }
 
 using mylib::BufLineReader;
@@ -104,6 +142,27 @@ void test_formatter() {
   log("value = %s", gBuf.getvalue()->data_);
 }
 
+void test_list_funcs() {
+  std::vector<int> v;
+  v.push_back(0);
+  log("v.size = %d", v.size());
+  v.erase(v.begin());
+  log("v.size = %d", v.size());
+
+  log("  ints");
+  auto ints = new List<int>({1, 2, 3});
+  log("-- before pop(0)");
+  for (int i = 0; i < len(ints); ++i) {
+    log("ints[%d] = %d", i, ints->index(i));
+  }
+  ints->pop(0);
+
+  log("-- after pop(0)");
+  for (int i = 0; i < len(ints); ++i) {
+    log("ints[%d] = %d", i, ints->index(i));
+  }
+}
+
 void test_contains() {
   bool b;
 
@@ -131,11 +190,25 @@ void test_contains() {
   log("b = %d", b);
 
   log("  floats");
-  auto floats = new List<float>({0.5, 0.25, 0.0});
+  auto floats = new List<double>({0.5, 0.25, 0.0});
   b = list_contains(floats, 0.0);
   log("b = %d", b);
   b = list_contains(floats, 42.0);
   log("b = %d", b);
+}
+
+void test_files() {
+  mylib::Writer* w = mylib::Stdout();
+  bool b = w->isatty();
+  log("b = %d", b);
+
+  FILE* f = fopen("README.md", "r");
+  auto r = new mylib::CFileLineReader(f);
+  //auto r = mylib::Stdin();
+  Str* s = r->readline();
+  log("test_files");
+  println_stderr(s);
+  log("test_files DONE");
 }
 
 int main(int argc, char **argv) {
@@ -175,6 +248,7 @@ int main(int argc, char **argv) {
 
   test_str_to_int();
   test_str_funcs();
+  test_list_funcs();
 
   log("");
   Dict<int, Str*>* d = new Dict<int, Str*>();
@@ -189,5 +263,22 @@ int main(int argc, char **argv) {
 
   log("");
   test_contains();
+
+  log("");
+  test_files();
+
+  // Str = 16 and List = 24.
+  // Rejected ideas about slicing:
+  //
+  // - Use data[len] == '\0' as OWNING and data[len] != '\0' as a slice?
+  //   It doesn't work because s[1:] would always have that problem
+  //
+  // - s->data == (void*)(s + 1)
+  //   Owning string has the data RIGHT AFTER?
+  //   Maybe works? but probably a bad idea because of GLOBAL Str instances.
+
+  log("");
+  log("sizeof(Str) = %zu", sizeof(Str));
+  log("sizeof(List<int>) = %zu", sizeof(List<int>));
 }
 

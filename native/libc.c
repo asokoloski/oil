@@ -71,7 +71,15 @@ func_fnmatch(PyObject *self, PyObject *args) {
   int flags = 0;
 #endif
 
+  const char *old_locale = setlocale(LC_CTYPE, NULL);
+  if (setlocale(LC_CTYPE, "") == NULL) {
+	  PyErr_SetString(PyExc_SystemError, "Invalid locale for LC_CTYPE");
+	  return NULL;
+  }
+
   int ret = fnmatch(pattern, str, flags);
+
+  setlocale(LC_CTYPE, old_locale);
 
   switch (ret) {
   case 0:
@@ -313,6 +321,13 @@ func_regex_first_group_match(PyObject *self, PyObject *args) {
   regex_t pat;
   regmatch_t m[NMATCH];
 
+  const char *old_locale = setlocale(LC_CTYPE, NULL);
+
+  if (setlocale(LC_CTYPE, "") == NULL) {
+	  PyErr_SetString(PyExc_SystemError, "Invalid locale for LC_CTYPE");
+	  return NULL;
+  }
+
   // Could have been checked by regex_parse for [[ =~ ]], but not for glob
   // patterns like ${foo/x*/y}.
 
@@ -327,6 +342,8 @@ func_regex_first_group_match(PyObject *self, PyObject *args) {
   // Match at offset 'pos'
   int result = regexec(&pat, str + pos, NMATCH, m, 0 /*flags*/);
   regfree(&pat);
+
+  setlocale(LC_CTYPE, old_locale);
 
   if (result != 0) {
     Py_RETURN_NONE;  // no match

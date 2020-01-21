@@ -12,9 +12,9 @@ from mycpp import mylib
 
 from core.util import p_die
 
-from typing import Optional, Tuple, List, TYPE_CHECKING
+from typing import Optional, Tuple, List, Union, IO, TYPE_CHECKING
 if TYPE_CHECKING:
-  from _devbuild.gen.syntax_asdl import token
+  from _devbuild.gen.syntax_asdl import Token
   from core.alloc import Arena
 
 
@@ -49,7 +49,7 @@ class DisallowedLineReader(_Reader):
   """For CommandParser in Oil expressions."""
 
   def __init__(self, arena, blame_token):
-    # type: (Arena, token) -> None
+    # type: (Arena, Token) -> None
     _Reader.__init__(self, arena)  # TODO: This arena is useless
     self.blame_token = blame_token
 
@@ -73,7 +73,7 @@ class FileLineReader(_Reader):
   def _GetLine(self):
     # type: () -> Optional[str]
     line = self.f.readline()
-    if not line:
+    if len(line) == 0:
       return None
 
     return line
