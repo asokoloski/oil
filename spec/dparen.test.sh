@@ -153,3 +153,21 @@ cat $TMP/x.txt
 --
 STDERR
 ## END
+
+#### Can't make assign whole array to var (( b = a ))
+a=(4 5 6)
+(( b = a ))
+echo "${a[@]}"
+echo "${b[@]}"
+## status: 1
+## stdout-json: ""
+## BUG bash/mksh status: 0
+## BUG bash/mksh STDOUT:
+4 5 6
+4
+## END
+## BUG zsh status: 0
+## BUG zsh STDOUT:
+4 5 6
+
+## END

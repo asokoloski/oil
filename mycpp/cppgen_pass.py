@@ -1088,22 +1088,54 @@ class Generate(ExpressionVisitor[T], StatementVisitor[None]):
             left_expr = gen.left_expr
             index_expr = gen.indices[0]
             seq = gen.sequences[0]
-            cond = gen.condlists[0]
+            cond = gen.condlists[0]  # TODO: not used!
 
-            seq_type = self.types[seq]
-            index_expr_type = self.types[index_expr]
-
+            # Write empty container as initialization.
             assert c_type.endswith('*'), c_type  # Hack
             self.write('new %s();\n' % c_type[:-1])
 
-            self.write_ind('for (ListIter<%s> it(', get_c_type(index_expr_type))
+            over_type = self.types[seq]
+            self.log('  iterating over type %s', over_type)
+
+            if over_type.type.fullname() == 'builtins.list':
+              c_type = get_c_type(over_type)
+              assert c_type.endswith('*'), c_type
+              c_iter_type = c_type.replace('List', 'ListIter', 1)[:-1]  # remove *
+            else:
+              # Example: assoc == Optional[Dict[str, str]] 
+              c_iter_type = 'TODO_ASSOC'
+
+            self.write_ind('for (%s it(', c_iter_type)
             self.accept(seq)
             self.write('); !it.Done(); it.Next()) {\n')
 
+            seq_type = self.types[seq]
             item_type = seq_type.args[0]  # get 'int' from 'List<int>'
-            self.write_ind('  %s ', get_c_type(item_type))
-            self.accept(index_expr)
-            self.write(' = it.Value();\n')
+
+            if isinstance(item_type, Instance):
+              self.write_ind('  %s ', get_c_type(item_type))
+              self.accept(index_expr)
+              self.write(' = it.Value();\n')
+            
+            elif isinstance(item_type, TupleType):  # for x, y in pairs
+              c_item_type = get_c_type(item_type)
+
+              if isinstance(index_expr, TupleExpr):
+                temp_name = 'tup%d' % self.unique_id
+                self.unique_id += 1
+                self.write_ind('  %s %s = it.Value();\n', c_item_type, temp_name)
+
+                self.indent += 1
+
+                self._write_tuple_unpacking(
+                    temp_name, index_expr.items, item_type.items)
+
+                self.indent -= 1
+              else:
+                raise AssertionError()
+
+            else:
+              raise AssertionError('Unexpected type %s' % item_type)
 
             self.write_ind('  %s->append(', lval.name)
             self.accept(left_expr)
@@ -1505,7 +1537,10 @@ class Generate(ExpressionVisitor[T], StatementVisitor[None]):
             class_name == 'ParseContext' and func_name == 'MakeOshParser' or
             class_name == 'ErrorFormatter' and func_name == 'PrettyPrintError' or
             class_name is None and func_name == 'PrettyPrintError' or
-            class_name == 'WordParser' and func_name == '_ParseVarExpr'
+            class_name == 'WordParser' and func_name == '_ParseVarExpr' or
+            class_name == '_WordEvaluator' and 
+              func_name in ('EvalWordSequence2', '_EvalWordToParts',
+                            '_EmptyStrOrError', '_EvalWordPart')
           ):
 
           default_val = o.arguments[-1].initializer
@@ -1830,7 +1865,9 @@ class Generate(ExpressionVisitor[T], StatementVisitor[None]):
 
                 # syntax_asdl
                 're', 're_repeat', 'class_literal_term', 'proc_sig',
-                'bracket_op', 'source', 'suffix_op',
+                'bracket_op', 'bracket_op_e',
+                'source', 'source_e',
+                'suffix_op', 'suffix_op_e',
 
                 'sh_lhs_expr', 'redir', 'parse_result',
 
@@ -1841,7 +1878,12 @@ class Generate(ExpressionVisitor[T], StatementVisitor[None]):
                 'place_expr_e', 'place_expr', 
                 'word_part_e', 'word_part', 
                 'word_e', 'word',
+
+                'lvalue_e', 'lvalue',
                 'value_e', 'value',
+                'part_value_e', 'part_value',
+                'cmd_value_e', 'cmd_value',
+
                 'glob_part_e', 'glob_part',
 
                 're_e', 're',
@@ -2023,6 +2065,8 @@ class Generate(ExpressionVisitor[T], StatementVisitor[None]):
           # Heuristic
           if isinstance(t, MemberExpr):
             c_type = '%s::%s*' % (t.expr.name, t.name)
+          elif isinstance(t, TupleExpr):
+            c_type = 'MultipleExceptions'  # TODO: implement this
           else:
             c_type = '%s*' % t.name
 

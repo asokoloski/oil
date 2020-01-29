@@ -4,7 +4,7 @@ word_eval.py - Evaluator for the word language.
 
 import pwd
 
-from _devbuild.gen.id_kind_asdl import Id, Kind
+from _devbuild.gen.id_kind_asdl import Id, Kind, Id_str, Kind_str
 from _devbuild.gen.syntax_asdl import (
     braced_var_sub, Token,
     word, word_e, word_t, compound_word,
@@ -22,7 +22,8 @@ from _devbuild.gen.runtime_asdl import (
     builtin_e, effect_e,
     part_value, part_value_e, part_value_t, part_value__String, part_value__Array,
     value, value_e, value_t, lvalue,
-    assign_arg, cmd_value_t, cmd_value, cmd_value__Assign, cmd_value__Argv,
+    assign_arg, 
+    cmd_value_e, cmd_value_t, cmd_value, cmd_value__Assign, cmd_value__Argv,
     value__Str, value__AssocArray, value__MaybeStrArray, value__Obj,
     value__Undef,
 )
@@ -39,15 +40,17 @@ from osh import state
 from osh import word_
 from osh import word_compile
 
+from mycpp.mylib import tagswitch
+from mycpp import mylib
+
 import posix_ as posix
 
-from typing import Any, Optional, Tuple, List, Union, cast, TYPE_CHECKING
+from typing import Optional, Tuple, List, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
   from _devbuild.gen.id_kind_asdl import Id_t
   from _devbuild.gen.syntax_asdl import (
-    command_t, speck,
-    word__Empty, word_part_t
+    command_t, speck, word_part_t
   )
   from _devbuild.gen.runtime_asdl import (
     builtin_t, effect_t, lvalue__Named
@@ -64,14 +67,15 @@ _STRING_AND_ARRAY = 'BASH_SOURCE'
 def EvalSingleQuoted(part):
   # type: (single_quoted) -> str
   if part.left.id == Id.Left_SingleQuoteRaw:
-    s = ''.join(t.val for t in part.tokens)
+    tmp = [t.val for t in part.tokens]
+    s = ''.join(tmp)
   elif part.left.id == Id.Left_SingleQuoteC:
     # NOTE: This could be done at compile time
     # TODO: Add location info for invalid backslash
-    s = ''.join(word_compile.EvalCStringToken(t.id, t.val)
-                for t in part.tokens)
+    tmp = [word_compile.EvalCStringToken(t.id, t.val) for t in part.tokens]
+    s = ''.join(tmp)
   else:
-    raise AssertionError(part.left.id)
+    raise AssertionError(Id_str(part.left.id))
   return s
 
 
@@ -85,37 +89,38 @@ def _BackslashEscape(s):
   return s.replace('\\', '\\\\')
 
 
-def _ValueToPartValue(val,  # type: value_t
-                      quoted,  # type: bool
-                      ):
-  # type: (...) -> Union[part_value__Array, part_value__String]
+def _ValueToPartValue(val, quoted):
+  # type: (value_t, bool) -> part_value_t
   """Helper for VarSub evaluation.
 
   Called by _EvalBracedVarSub and _EvalWordPart for SimpleVarSub.
   """
-  assert isinstance(val, value_t), val
   UP_val = val
 
-  if UP_val.tag == value_e.Str:
-    val = cast(value__Str, UP_val)
-    return part_value.String(val.s, quoted, not quoted)
+  with tagswitch(val) as case:
+    if case(value_e.Str):
+      val = cast(value__Str, UP_val)
+      return part_value.String(val.s, quoted, not quoted)
 
-  elif UP_val.tag == value_e.MaybeStrArray:
-    val = cast(value__MaybeStrArray, UP_val)
-    return part_value.Array(val.strs)
+    elif case(value_e.MaybeStrArray):
+      val = cast(value__MaybeStrArray, UP_val)
+      return part_value.Array(val.strs)
 
-  elif UP_val.tag == value_e.AssocArray:
-    val = cast(value__AssocArray, UP_val)
-    # TODO: Is this correct?
-    return part_value.Array(val.d.values())
+    elif case(value_e.AssocArray):
+      val = cast(value__AssocArray, UP_val)
+      # TODO: Is this correct?
+      return part_value.Array(val.d.values())
 
-  elif UP_val.tag == value_e.Obj:
-    val = cast(value__Obj, UP_val)
-    return part_value.String(str(val.obj), quoted, not quoted)
+    elif case(value_e.Obj):
+      if mylib.PYTHON:
+        val = cast(value__Obj, UP_val)
+        return part_value.String(str(val.obj), quoted, not quoted)
+      # Not in C++
+      raise AssertionError()
 
-  else:
-    # Undef should be caught by _EmptyStrOrError().
-    raise AssertionError(val.__class__.__name__)
+    else:
+      # Undef should be caught by _EmptyStrOrError().
+      raise AssertionError(val.tag_())
 
 
 def _MakeWordFrames(part_vals):
@@ -124,12 +129,6 @@ def _MakeWordFrames(part_vals):
   A word evaluates to a flat list of part_value (String or Array).  frame is a
   portion that results in zero or more args.  It can never be joined.  This
   idea exists because of arrays like "$@" and "${a[@]}".
-
-  Args:
-    part_vals: array of part_value.
-
-  Returns:
-    List[Tuple[str, quoted, do_split]].  Each Tuple is called a "frame".
 
   Example:
 
@@ -143,30 +142,37 @@ def _MakeWordFrames(part_vals):
       [ ('2 3', True) ]
       [ ('4', True), ('y', False ]
   """
-  current = [] # type: List[Tuple[str, bool, bool]]
+  current = []  # type: List[Tuple[str, bool, bool]]
   frames = [current]
 
   for p in part_vals:
     UP_p = p
 
-    if UP_p.tag == part_value_e.String:
-      p = cast(part_value__String, UP_p)
-      current.append((p.s, p.quoted, p.do_split))
+    with tagswitch(p) as case:
+      if case(part_value_e.String):
+        p = cast(part_value__String, UP_p)
+        current.append((p.s, p.quoted, p.do_split))
 
-    elif UP_p.tag == part_value_e.Array:
-      p = cast(part_value__Array, UP_p)
-      for i, s in enumerate(s for s in p.strs if s is not None):
-        # Arrays parts are always quoted; otherwise they would have decayed to
-        # a string.
-        new = (s, True, False)
-        if i == 0:
-          current.append(new)
-        else:
-          current = [new]
-          frames.append(current)  # singleton frame
+      elif case(part_value_e.Array):
+        p = cast(part_value__Array, UP_p)
 
-    else:
-      raise AssertionError(p.__class__.__name__)
+        is_first = True
+        for s in p.strs:
+          if s is None:
+            continue  # ignore undefined array entries
+
+          # Arrays parts are always quoted; otherwise they would have decayed to
+          # a string.
+          portion = (s, True, False)
+          if is_first:
+            current.append(portion)
+            is_first = False
+          else:
+            current = [portion]
+            frames.append(current)  # singleton frame
+
+      else:
+        raise AssertionError()
 
   return frames
 
@@ -175,15 +181,18 @@ def _MakeWordFrames(part_vals):
 def _DecayPartValuesToString(part_vals, join_char):
   # type: (List[part_value_t], str) -> str
   # Decay ${a=x"$@"x} to string.
-  out = []
+  out = []  # type: List[str]
   for p in part_vals:
     UP_p = p
-    if UP_p.tag == part_value_e.String:
-      p = cast(part_value__String, UP_p)
-      out.append(p.s)
-    else:
-      p = cast(part_value__Array, UP_p)
-      out.append(join_char.join(s for s in p.strs if s is not None))
+    with tagswitch(p) as case:
+      if case(part_value_e.String):
+        p = cast(part_value__String, UP_p)
+        out.append(p.s)
+      else:
+        p = cast(part_value__Array, UP_p)
+        # TODO: Eliminate double join for speed?
+        tmp = [s for s in p.strs if s is not None]
+        out.append(join_char.join(tmp))
   return ''.join(out)
 
 
@@ -194,65 +203,74 @@ def _PerformSlice(val,  # type: value_t
                   ):
   # type: (...) -> value_t
   UP_val = val
-  if UP_val.tag == value_e.Str:  # Slice UTF-8 characters in a string.
-    val = cast(value__Str, UP_val)
-    s = val.s
+  with tagswitch(val) as case:
+    if case(value_e.Str):  # Slice UTF-8 characters in a string.
+      val = cast(value__Str, UP_val)
+      s = val.s
 
-    if begin < 0:
-      # It could be negative if we compute unicode length, but that's
-      # confusing.
+      if begin < 0:
+        # It could be negative if we compute unicode length, but that's
+        # confusing.
 
-      # TODO: Instead of attributing it to the word part, it would be
-      # better if we attributed it to arith_expr begin.
-      raise error.InvalidSlice(
-          "The start index of a string slice can't be negative: %d",
-          begin, part=part)
-
-    byte_begin = string_ops.AdvanceUtf8Chars(s, begin, 0)
-
-    if length is None:
-      byte_end = len(s)
-    else:
-      if length < 0:
         # TODO: Instead of attributing it to the word part, it would be
         # better if we attributed it to arith_expr begin.
         raise error.InvalidSlice(
-            "The length of a string slice can't be negative: %d",
-            length, part=part)
+            "The start index of a string slice can't be negative: %d",
+            begin, part=part)
 
-      byte_end = string_ops.AdvanceUtf8Chars(s, length, byte_begin)
+      byte_begin = string_ops.AdvanceUtf8Chars(s, begin, 0)
 
-    substr = s[byte_begin : byte_end]
-    val = value.Str(substr)
+      if length is None:
+        byte_end = len(s)
+      else:
+        if length < 0:
+          # TODO: Instead of attributing it to the word part, it would be
+          # better if we attributed it to arith_expr begin.
+          raise error.InvalidSlice(
+              "The length of a string slice can't be negative: %d",
+              length, part=part)
 
-  elif UP_val.tag == value_e.MaybeStrArray:  # Slice array entries.
-    val = cast(value__MaybeStrArray, UP_val)
-    # NOTE: This error is ALWAYS fatal in bash.  It's inconsistent with
-    # strings.
-    if length and length < 0:
-      e_die("The length index of a array slice can't be negative: %d",
-            length, part=part)
+        byte_end = string_ops.AdvanceUtf8Chars(s, length, byte_begin)
 
-    # NOTE: unset elements don't count towards the length.
-    strs = []
-    for s in val.strs[begin:]:
-      if s is not None:
-        strs.append(s)
-        if len(strs) == length:  # never true for unspecified length
-          break
-    val = value.MaybeStrArray(strs)
+      substr = s[byte_begin : byte_end]
+      val = value.Str(substr)
 
-  elif UP_val.tag == value_e.AssocArray:
-    val = cast(value__AssocArray, UP_val)
-    e_die("Can't slice associative arrays", part=part)
+    elif case(value_e.MaybeStrArray):  # Slice array entries.
+      val = cast(value__MaybeStrArray, UP_val)
+      # NOTE: This error is ALWAYS fatal in bash.  It's inconsistent with
+      # strings.
+      if length and length < 0:
+        e_die("The length index of a array slice can't be negative: %d",
+              length, part=part)
 
-  else:
-    raise NotImplementedError(val.__class__.__name__)
+      # NOTE: unset elements don't count towards the length.
+      strs = []  # type: List[str]
+      for s in val.strs[begin:]:
+        if s is not None:
+          strs.append(s)
+          if len(strs) == length:  # never true for unspecified length
+            break
+      val = value.MaybeStrArray(strs)
+
+    elif case(value_e.AssocArray):
+      val = cast(value__AssocArray, UP_val)
+      e_die("Can't slice associative arrays", part=part)
+
+    else:
+      raise NotImplementedError(val.tag_())
 
   return val
 
 
-class _WordEvaluator(object):
+class SimpleWordEvaluator(object):
+  """For use by the _ExprEvaluator."""
+
+  def EvalWordToString(self, w, do_fnmatch=False, do_ere=False):
+    # type: (word_t, bool, bool) -> value__Str
+    raise NotImplementedError()
+
+
+class _WordEvaluator(SimpleWordEvaluator):
   """Abstract base class for word evaluators.
 
   Public entry points:
@@ -285,7 +303,7 @@ class _WordEvaluator(object):
     Returns:
        part_value
     """
-    raise NotImplementedError
+    raise NotImplementedError()
 
   def _EvalProcessSub(self, part, id_):
     # type: (command_t, int) -> part_value_t
@@ -297,7 +315,7 @@ class _WordEvaluator(object):
     Returns:
        part_value
     """
-    raise NotImplementedError
+    raise NotImplementedError()
 
   def _EvalTildeSub(self, token):
     # type: (Token) -> str
@@ -310,7 +328,7 @@ class _WordEvaluator(object):
       # First look up the HOME var, then ask the OS.  This is what bash does.
       val = self.mem.GetVar('HOME')
       UP_val = val
-      if UP_val.tag == value_e.Str:
+      if val.tag_() == value_e.Str:
         val = cast(value__Str, UP_val)
         return val.s
       return process.GetHomeDir()
@@ -321,7 +339,7 @@ class _WordEvaluator(object):
     try:
       e = pwd.getpwnam(name)
     except KeyError:
-      # If not found, it's ~nonexistente.  TODO: In strict mode, this should be
+      # If not found, it's ~nonexistent.  TODO: In strict mode, this should be
       # an error, kind of like failglob and nounset.  Perhaps strict-tilde or
       # even strict-word-eval.
       result = token.val
@@ -392,23 +410,26 @@ class _WordEvaluator(object):
 
       echo ${a:-x"$@"x}
     """
-    undefined = (val.tag == value_e.Undef)
+    undefined = (val.tag_() == value_e.Undef)
+
+    no = None  # type: List[part_value_t]
 
     # TODO: Change this to a bitwise test?
     if op.op_id in (
         Id.VTest_ColonHyphen, Id.VTest_ColonEquals, Id.VTest_ColonQMark,
         Id.VTest_ColonPlus):
       UP_val = val
-      if UP_val.tag == value_e.Undef:
-        is_falsey = True
-      elif UP_val.tag == value_e.Str:
-        val = cast(value__Str, UP_val)
-        is_falsey = not val.s
-      elif UP_val.tag == value_e.MaybeStrArray:
-        val = cast(value__MaybeStrArray, UP_val)
-        is_falsey = not val.strs
-      else:
-        raise NotImplementedError(UP_val.tag)
+      with tagswitch(val) as case:
+        if case(value_e.Undef):
+          is_falsey = True
+        elif case(value_e.Str):
+          val = cast(value__Str, UP_val)
+          is_falsey = not val.s
+        elif case(value_e.MaybeStrArray):
+          val = cast(value__MaybeStrArray, UP_val)
+          is_falsey = not val.strs
+        else:
+          raise NotImplementedError(val.tag_())
     else:
       is_falsey = undefined
 
@@ -417,23 +438,23 @@ class _WordEvaluator(object):
       if is_falsey:
         assert op.arg_word
         self._EvalWordToParts(op.arg_word, quoted, part_vals, is_subst=True)
-        return None, effect_e.SpliceParts
+        return no, effect_e.SpliceParts
       else:
-        return None, effect_e.NoOp
+        return no, effect_e.NoOp
 
     elif op.op_id in (Id.VTest_ColonPlus, Id.VTest_Plus):
       # Inverse of the above.
       if is_falsey:
-        return None, effect_e.NoOp
+        return no, effect_e.NoOp
       else:
         assert op.arg_word
         self._EvalWordToParts(op.arg_word, quoted, part_vals, is_subst=True)
-        return None, effect_e.SpliceParts
+        return no, effect_e.SpliceParts
 
     elif op.op_id in (Id.VTest_ColonEquals, Id.VTest_Equals):
       if is_falsey:
         # Collect new part vals.
-        assign_part_vals = [] # type: List[part_value_t]
+        assign_part_vals = []  # type: List[part_value_t]
         self._EvalWordToParts(op.arg_word, quoted, assign_part_vals,
                               is_subst=True)
 
@@ -441,20 +462,20 @@ class _WordEvaluator(object):
         part_vals.extend(assign_part_vals)
         return assign_part_vals, effect_e.SpliceAndAssign
       else:
-        return None, effect_e.NoOp
+        return no, effect_e.NoOp
 
     elif op.op_id in (Id.VTest_ColonQMark, Id.VTest_QMark):
       if is_falsey:
         # The arg is the error mesage
-        error_part_vals = [] # type: List[part_value_t]
+        error_part_vals = []  # type: List[part_value_t]
         self._EvalWordToParts(op.arg_word, quoted, error_part_vals,
                               is_subst=True)
         return error_part_vals, effect_e.Error
       else:
-        return None, effect_e.NoOp
+        return no, effect_e.NoOp
 
     else:
-      raise NotImplementedError(id)
+      raise NotImplementedError(Id_str(op.op_id))
 
   def _EvalIndirectArrayExpansion(self, name, index):
     # type: (str, str) -> Optional[value_t]
@@ -467,36 +488,42 @@ class _WordEvaluator(object):
     """
     if not match.IsValidVarName(name):
       return None
+
     val = self.mem.GetVar(name)
     UP_val = val
-    if UP_val.tag == value_e.MaybeStrArray:
-      val = cast(value__MaybeStrArray, UP_val)
-      if index in ('@', '*'):
-        # TODO: maybe_decay_array
-        return value.MaybeStrArray(val.strs)
-      try:
-        index_num = int(index)
-      except ValueError:
+
+    with tagswitch(val) as case:
+      if case(value_e.Undef):
+        return value.Undef()
+
+      elif case(value_e.Str):
         return None
-      try:
-        return value.Str(val.strs[index_num])
-      except IndexError:
-        return value.Undef()
-    elif UP_val.tag == value_e.AssocArray:
-      val = cast(value__AssocArray, UP_val)
-      if index in ('@', '*'):
-        raise NotImplementedError
-      try:
-        return value.Str(val.d[index])
-      except KeyError:
-        return value.Undef()
-    elif UP_val.tag == value_e.Undef:
-      val = cast(value__Undef, UP_val)
-      return value.Undef()
-    elif val.tag == value_e.Str:
-      return None
-    else:
-      raise AssertionError
+
+      elif case(value_e.MaybeStrArray):
+        val = cast(value__MaybeStrArray, UP_val)
+        if index in ('@', '*'):
+          # TODO: maybe_decay_array
+          return value.MaybeStrArray(val.strs)
+        try:
+          index_num = int(index)
+        except ValueError:
+          return None
+        try:
+          return value.Str(val.strs[index_num])
+        except IndexError:
+          return value.Undef()
+
+      elif case(value_e.AssocArray):
+        val = cast(value__AssocArray, UP_val)
+        if index in ('@', '*'):
+          raise NotImplementedError()
+        try:
+          return value.Str(val.d[index])
+        except KeyError:
+          return value.Undef()
+
+      else:
+        raise AssertionError()
 
   def _ApplyPrefixOp(self, val, prefix_op, token):
     # type: (value_t, speck, Token) -> value_t
@@ -510,41 +537,45 @@ class _WordEvaluator(object):
 
     if op_id == Id.VSub_Pound:  # LENGTH
       UP_val = val
-      if UP_val.tag == value_e.Str:
-        val = cast(value__Str, UP_val)
-        # NOTE: Whether bash counts bytes or chars is affected by LANG
-        # environment variables.
-        # Should we respect that, or another way to select?  set -o
-        # count-bytes?
+      with tagswitch(val) as case:
+        if case(value_e.Str):
+          val = cast(value__Str, UP_val)
+          # NOTE: Whether bash counts bytes or chars is affected by LANG
+          # environment variables.
+          # Should we respect that, or another way to select?  set -o
+          # count-bytes?
 
-        # https://stackoverflow.com/questions/17368067/length-of-string-in-bash
-        try:
-          length = string_ops.CountUtf8Chars(val.s)
-        except error.InvalidUtf8 as e:
-          # Add this hear so we don't have to add it so far down the stack.
-          # TODO: It's better to show BOTH this CODE an the actual DATA
-          # somehow.
-          e.span_id = token.span_id
+          # https://stackoverflow.com/questions/17368067/length-of-string-in-bash
+          try:
+            length = string_ops.CountUtf8Chars(val.s)
+          except error.InvalidUtf8 as e:
+            # Add this hear so we don't have to add it so far down the stack.
+            # TODO: It's better to show BOTH this CODE an the actual DATA
+            # somehow.
+            e.span_id = token.span_id
 
-          if self.exec_opts.strict_word_eval:
-            raise
-          else:
-            # NOTE: Doesn't make the command exit with 1; it just returns a
-            # length of -1.
-            self.errfmt.PrettyPrintError(e, prefix='warning: ')
-            return value.Str('-1')
+            if self.exec_opts.strict_word_eval:
+              raise
+            else:
+              # NOTE: Doesn't make the command exit with 1; it just returns a
+              # length of -1.
+              self.errfmt.PrettyPrintError(e, prefix='warning: ')
+              return value.Str('-1')
 
-      elif UP_val.tag == value_e.MaybeStrArray:
-        val = cast(value__MaybeStrArray, UP_val)
-        # There can be empty placeholder values in the array.
-        length = sum(1 for s in val.strs if s is not None)
+        elif case(value_e.MaybeStrArray):
+          val = cast(value__MaybeStrArray, UP_val)
+          # There can be empty placeholder values in the array.
+          length = 0
+          for s in val.strs:
+            if s is not None:
+              length += 1
 
-      elif UP_val.tag == value_e.AssocArray:
-        val = cast(value__AssocArray, UP_val)
-        length = len(val.d)
+        elif case(value_e.AssocArray):
+          val = cast(value__AssocArray, UP_val)
+          length = len(val.d)
 
-      else:
-        raise AssertionError(val.__class__.__name__)
+        else:
+          raise AssertionError()
 
       return value.Str(str(length))
 
@@ -557,45 +588,54 @@ class _WordEvaluator(object):
       #   arrays?
 
       UP_val = val
-      if UP_val.tag == value_e.Str:
-        val = cast(value__Str, UP_val)
-        # plain variable name, like 'foo'
-        if match.IsValidVarName(val.s):
-          return self.mem.GetVar(val.s)
+      with tagswitch(val) as case:
+        if case(value_e.Str):
+          val = cast(value__Str, UP_val)
+          # plain variable name, like 'foo'
+          if match.IsValidVarName(val.s):
+            return self.mem.GetVar(val.s)
 
-        # positional argument, like '1'
-        try:
-          return self.mem.GetArgNum(int(val.s))
-        except ValueError:
-          pass
+          # positional argument, like '1'
+          try:
+            return self.mem.GetArgNum(int(val.s))
+          except ValueError:
+            pass
 
-        if val.s in ('@', '*'):
-          # TODO: maybe_decay_array
-          return value.MaybeStrArray(self.mem.GetArgv())
+          if val.s in ('@', '*'):
+            # TODO: maybe_decay_array
+            return value.MaybeStrArray(self.mem.GetArgv())
 
-        # otherwise an array reference, like 'arr[0]' or 'arr[xyz]' or 'arr[@]'
-        i = val.s.find('[')
-        if i >= 0 and val.s[-1] == ']':
-          name, index = val.s[:i], val.s[i+1:-1]
-          result = self._EvalIndirectArrayExpansion(name, index)
-          if result is not None:
-            return result
+          # otherwise an array reference, like 'arr[0]' or 'arr[xyz]' or 'arr[@]'
+          i = val.s.find('[')
+          if i >= 0 and val.s[-1] == ']':
+            name = val.s[:i]
+            index = val.s[i+1:-1]
+            result = self._EvalIndirectArrayExpansion(name, index)
+            if result is not None:
+              return result
 
-        # Note that bash doesn't consider this fatal.  It makes the
-        # command exit with '1', but we don't have that ability yet?
-        e_die('Bad indirect expansion: %r', val.s, token=token)
+          # Note that bash doesn't consider this fatal.  It makes the
+          # command exit with '1', but we don't have that ability yet?
+          e_die('Bad indirect expansion: %r', val.s, token=token)
 
-      elif UP_val.tag == value_e.MaybeStrArray:
-        val = cast(value__MaybeStrArray, UP_val)
-        indices = [str(i) for i, s in enumerate(val.strs) if s is not None]
-        return value.MaybeStrArray(indices)
+        elif case(value_e.MaybeStrArray):
+          val = cast(value__MaybeStrArray, UP_val)
+          # translation issue: tuple indices not supported in list comprehensions
+          #indices = [str(i) for i, s in enumerate(val.strs) if s is not None]
+          indices = []  # type: List[str]
+          for i, s in enumerate(val.strs):
+            if s is not None:
+              indices.append(str(i))
+          return value.MaybeStrArray(indices)
 
-      elif UP_val.tag == value_e.AssocArray:
-        val = cast(value__AssocArray, UP_val)
-        indices = [str(k) for k in val.d]
-        return value.MaybeStrArray(indices)
-      else:
-        raise NotImplementedError(val.tag)
+        elif case(value_e.AssocArray):
+          val = cast(value__AssocArray, UP_val)
+          assert val.d is not None  # for MyPy, so it's not Optional[]
+          indices = [str(k) for k in val.d]
+          return value.MaybeStrArray(indices)
+
+        else:
+          raise NotImplementedError(val.tag_())
 
     else:
       raise AssertionError(op_id)
@@ -612,30 +652,34 @@ class _WordEvaluator(object):
       assert arg_val.tag == value_e.Str
 
       UP_val = val
-      if UP_val.tag == value_e.Str:
-        val = cast(value__Str, UP_val)
-        s = string_ops.DoUnarySuffixOp(val.s, op, arg_val.s)
-        #log('%r %r -> %r', val.s, arg_val.s, s)
-        new_val = value.Str(s) # type: value_t
+      with tagswitch(val) as case:
+        if case(value_e.Str):
+          val = cast(value__Str, UP_val)
+          s = string_ops.DoUnarySuffixOp(val.s, op, arg_val.s)
+          #log('%r %r -> %r', val.s, arg_val.s, s)
+          new_val = value.Str(s) # type: value_t
 
-      elif UP_val.tag == value_e.MaybeStrArray:
-        val = cast(value__MaybeStrArray, UP_val)
-        # ${a[@]#prefix} is VECTORIZED on arrays.  Oil should have this too.
-        strs = []
-        for s in val.strs:
-          if s is not None:
+        elif case(value_e.MaybeStrArray):
+          val = cast(value__MaybeStrArray, UP_val)
+          # ${a[@]#prefix} is VECTORIZED on arrays.  Oil should have this too.
+          strs = []  # type: List[str]
+          for s in val.strs:
+            if s is not None:
+              strs.append(string_ops.DoUnarySuffixOp(s, op, arg_val.s))
+          new_val = value.MaybeStrArray(strs)
+
+        elif case(value_e.AssocArray):
+          val = cast(value__AssocArray, UP_val)
+          strs = []
+          for s in val.d.itervalues():
             strs.append(string_ops.DoUnarySuffixOp(s, op, arg_val.s))
-        new_val = value.MaybeStrArray(strs)
+          new_val = value.MaybeStrArray(strs)
 
-      elif UP_val.tag == value_e.AssocArray:
-        val = cast(value__AssocArray, UP_val)
-        strs = []
-        for s in val.d.itervalues():
-          strs.append(string_ops.DoUnarySuffixOp(s, op, arg_val.s))
-        new_val = value.MaybeStrArray(strs)
+        else:
+          raise AssertionError(val.tag_())
 
     else:
-      raise AssertionError(op_kind)
+      raise AssertionError(Kind_str(op_kind))
 
     return new_val
 
@@ -662,7 +706,7 @@ class _WordEvaluator(object):
     # Special case for "".  The parser outputs (DoubleQuoted []), instead
     # of (DoubleQuoted [Literal '']).  This is better but it means we
     # have to check for it.
-    if not parts:
+    if len(parts) == 0:
       v = part_value.String('', True, False)
       part_vals.append(v)
       return
@@ -676,7 +720,7 @@ class _WordEvaluator(object):
 
     Example: var x = "$foo-${foo}"
     """
-    part_vals = [] # type: List[part_value_t]
+    part_vals = []  # type: List[part_value_t]
     self._EvalDoubleQuoted(dq_part.parts, part_vals)
     return self._PartValsToString(part_vals, dq_part.left.span_id)
 
@@ -685,7 +729,8 @@ class _WordEvaluator(object):
     """Decay $* to a string."""
     assert val.tag == value_e.MaybeStrArray, val
     sep = self.splitter.GetJoinChar()
-    return value.Str(sep.join(s for s in val.strs if s is not None))
+    tmp = [s for s in val.strs if s is not None]
+    return value.Str(sep.join(tmp))
 
   def _BashArrayCompat(self, val):
     # type: (value__MaybeStrArray) -> value__Str
@@ -694,14 +739,9 @@ class _WordEvaluator(object):
     s = val.strs[0] if val.strs else ''
     return value.Str(s)
 
-  def _EmptyStrOrError(self,
-                       val,  # type: value_t
-                       token=None,  # type: Optional[Token]
-                       ):
-    # type: (...) -> value_t
-    assert isinstance(val, value_t), val
-
-    if val.tag == value_e.Undef:
+  def _EmptyStrOrError(self, val, token=None):
+    # type: (value_t, Optional[Token]) -> value_t
+    if val.tag_() == value_e.Undef:
       if self.exec_opts.nounset:
         if token is None:
           e_die('Undefined variable')
@@ -766,87 +806,91 @@ class _WordEvaluator(object):
     if part.bracket_op:
       bracket_op = part.bracket_op
       UP_bracket_op = bracket_op
-      if UP_bracket_op.tag == bracket_op_e.WholeArray:
-        bracket_op = cast(bracket_op__WholeArray, UP_bracket_op)
-        op_id = bracket_op.op_id
+      with tagswitch(bracket_op) as case:
+        if case(bracket_op_e.WholeArray):
+          bracket_op = cast(bracket_op__WholeArray, UP_bracket_op)
+          op_id = bracket_op.op_id
 
-        if op_id == Id.Lit_At:
-          maybe_decay_array = not quoted  # ${a[@]} decays but "${a[@]}" doesn't
-          UP_val = val
-          if UP_val.tag == value_e.Undef:
-            val = self._EmptyMaybeStrArrayOrError(part.token)
-          elif UP_val.tag == value_e.Str:
-            val = cast(value__Str, UP_val)
-            e_die("Can't index string with @: %r", val, part=part)
-          elif UP_val.tag == value_e.MaybeStrArray:
-            val = cast(value__MaybeStrArray, UP_val)
-            # TODO: Is this a no-op?  Just leave 'val' alone.
-            val = value.MaybeStrArray(val.strs)
+          if op_id == Id.Lit_At:
+            maybe_decay_array = not quoted  # ${a[@]} decays but "${a[@]}" doesn't
+            UP_val = val
+            with tagswitch(val) as case2:
+              if case2(value_e.Undef):
+                val = self._EmptyMaybeStrArrayOrError(part.token)
+              elif case2(value_e.Str):
+                val = cast(value__Str, UP_val)
+                e_die("Can't index string with @: %r", val, part=part)
+              elif case2(value_e.MaybeStrArray):
+                val = cast(value__MaybeStrArray, UP_val)
+                # TODO: Is this a no-op?  Just leave 'val' alone.
+                val = value.MaybeStrArray(val.strs)
 
-        elif op_id == Id.Arith_Star:
-          maybe_decay_array = True  # both ${a[*]} and "${a[*]}" decay
+          elif op_id == Id.Arith_Star:
+            maybe_decay_array = True  # both ${a[*]} and "${a[*]}" decay
+            UP_val = val
+            with tagswitch(val) as case2:
+              if case2(value_e.Undef):
+                val = self._EmptyMaybeStrArrayOrError(part.token)
+              elif case2(value_e.Str):
+                val = cast(value__Str, UP_val)
+                e_die("Can't index string with *: %r", val, part=part)
+              elif case2(value_e.MaybeStrArray):
+                val = cast(value__MaybeStrArray, UP_val)
+                # TODO: Is this a no-op?  Just leave 'val' alone.
+                # ${a[*]} or "${a[*]}" :  maybe_decay_array is always true
+                val = value.MaybeStrArray(val.strs)
+
+          else:
+            raise AssertionError(op_id)  # unknown
+
+        elif case(bracket_op_e.ArrayIndex):
+          bracket_op = cast(bracket_op__ArrayIndex, UP_bracket_op)
+          anode = bracket_op.expr
+
           UP_val = val
-          if UP_val.tag == value_e.Undef:
-            val = self._EmptyMaybeStrArrayOrError(part.token)
-          elif UP_val.tag == value_e.Str:
-            val = cast(value__Str, UP_val)
-            e_die("Can't index string with *: %r", val, part=part)
-          elif UP_val.tag == value_e.MaybeStrArray:
-            val = cast(value__MaybeStrArray, UP_val)
-            # TODO: Is this a no-op?  Just leave 'val' alone.
-            # ${a[*]} or "${a[*]}" :  maybe_decay_array is always true
-            val = value.MaybeStrArray(val.strs)
+          with tagswitch(val) as case2:
+            if case2(value_e.Undef):
+              pass  # it will be checked later
+
+            elif case2(value_e.Str):
+              # Bash treats any string as an array, so we can't add our own
+              # behavior here without making valid OSH invalid bash.
+              e_die("Can't index string %r with integer", part.token.val,
+                    token=part.token)
+
+            elif case2(value_e.MaybeStrArray):
+              val = cast(value__MaybeStrArray, UP_val)
+              index = self.arith_ev.EvalToInt(anode)
+              try:
+                # could be None because representation is sparse
+                s = val.strs[index]
+              except IndexError:
+                s = None
+
+              if s is None:
+                val = value.Undef()
+              else:
+                val = value.Str(s)
+
+            elif case2(value_e.AssocArray):
+              val = cast(value__AssocArray, UP_val)
+              key = self.arith_ev.EvalWordToString(anode)
+              s = val.d.get(key)
+
+              if s is None:
+                val = value.Undef()
+              else:
+                val = value.Str(s)
+
+            else:
+              raise AssertionError(val.tag_())
 
         else:
-          raise AssertionError(op_id)  # unknown
-
-      elif UP_bracket_op.tag == bracket_op_e.ArrayIndex:
-        bracket_op = cast(bracket_op__ArrayIndex, UP_bracket_op)
-        anode = bracket_op.expr
-
-        UP_val = val
-        if UP_val.tag == value_e.Undef:
-          pass  # it will be checked later
-
-        elif UP_val.tag == value_e.Str:
-          # Bash treats any string as an array, so we can't add our own
-          # behavior here without making valid OSH invalid bash.
-          e_die("Can't index string %r with integer", part.token.val,
-                token=part.token)
-
-        elif UP_val.tag == value_e.MaybeStrArray:
-          val = cast(value__MaybeStrArray, UP_val)
-          index = self.arith_ev.EvalToIndex(anode)
-          try:
-            # could be None because representation is sparse
-            s = val.strs[index]
-          except IndexError:
-            s = None
-
-          if s is None:
-            val = value.Undef()
-          else:
-            val = value.Str(s)
-
-        elif UP_val.tag == value_e.AssocArray:
-          val = cast(value__AssocArray, UP_val)
-          key = self.arith_ev.EvalWordToString(anode)
-          s = val.d.get(key)
-
-          if s is None:
-            val = value.Undef()
-          else:
-            val = value.Str(s)
-
-        else:
-          raise AssertionError(val.__class__.__name__)
-
-      else:
-        raise AssertionError(bracket_op.tag)
+          raise AssertionError(bracket_op.tag_())
 
     else:  # no bracket op
       # When the array is "$@", var_name is None
-      if var_name and val.tag in (value_e.MaybeStrArray, value_e.AssocArray):
+      if var_name and val.tag_() in (value_e.MaybeStrArray, value_e.AssocArray):
         if var_name == _STRING_AND_ARRAY:
           bash_array_compat = True
         else:
@@ -863,11 +907,15 @@ class _WordEvaluator(object):
         names.sort()
         val = value.MaybeStrArray(names)
 
-        assert isinstance(part.suffix_op, (suffix_op__Nullary, suffix_op__Unary))
-        suffix_op = part.suffix_op # type: Union[suffix_op__Nullary, suffix_op__Unary]
+        # Test for maybe_decay_array
+        UP_suffix_op = part.suffix_op
+        if UP_suffix_op.tag_() == suffix_op_e.Nullary:
+          suffix_op = cast(suffix_op__Nullary, UP_suffix_op)
+          # "${!prefix@}" is the only one that doesn't decay
+          maybe_decay_array = not (quoted and suffix_op.op_id == Id.VOp3_At)
+        else:
+          raise AssertionError()
 
-        # "${!prefix@}" is the only one that doesn't decay
-        maybe_decay_array = not (quoted and suffix_op.op_id == Id.VOp3_At)
       else:
         # TODO: maybe_decay_array for "${!assoc[@]}" vs. ${!assoc[*]}
         val = self._ApplyPrefixOp(val, part.prefix_op, part.token)
@@ -877,142 +925,144 @@ class _WordEvaluator(object):
     elif part.suffix_op:
       op = part.suffix_op
       UP_op = op
-      if UP_op.tag == suffix_op_e.Nullary:
-        op = cast(suffix_op__Nullary, UP_op)
-        if op.op_id == Id.VOp0_P:
-          prompt = self.prompt_ev.EvalPrompt(val)
-          # readline gets rid of these, so we should too.
-          p = prompt.replace('\x01', '').replace('\x02', '')
-          val = value.Str(p)
-        elif op.op_id == Id.VOp0_Q:
-          assert isinstance(val, value__Str)
-          val = value.Str(string_ops.ShellQuote(val.s))
-        else:
-          raise NotImplementedError(op.op_id)
+      with tagswitch(op) as case:
+        if case(suffix_op_e.Nullary):
+          op = cast(suffix_op__Nullary, UP_op)
+          if op.op_id == Id.VOp0_P:
+            prompt = self.prompt_ev.EvalPrompt(val)
+            # readline gets rid of these, so we should too.
+            p = prompt.replace('\x01', '').replace('\x02', '')
+            val = value.Str(p)
+          elif op.op_id == Id.VOp0_Q:
+            assert val.tag_() == value_e.Str, val
+            val = cast(value__Str, val)
+            val = value.Str(string_ops.ShellQuote(val.s))
+          else:
+            raise NotImplementedError(op.op_id)
 
-      elif UP_op.tag == suffix_op_e.Unary:
-        op = cast(suffix_op__Unary, UP_op)
-        if lookup.LookupKind(op.op_id) == Kind.VTest:
-          # TODO: Change style to:
-          # if self._ApplyTestOp(...)
-          #   return
-          # It should return whether anything was done.  If not, we continue to
-          # the end, where we might throw an error.
+        elif case(suffix_op_e.Unary):
+          op = cast(suffix_op__Unary, UP_op)
+          if lookup.LookupKind(op.op_id) == Kind.VTest:
+            # TODO: Change style to:
+            # if self._ApplyTestOp(...)
+            #   return
+            # It should return whether anything was done.  If not, we continue to
+            # the end, where we might throw an error.
 
-          effect_part_vals, effect = self._ApplyTestOp(val, op, quoted, part_vals)
+            effect_part_vals, effect = self._ApplyTestOp(val, op, quoted, part_vals)
 
-          # NOTE: Splicing part_values is necessary because of code like
-          # ${undef:-'a b' c 'd # e'}.  Each part_value can have a different
-          # do_glob/do_elide setting.
-          if effect == effect_e.SpliceParts:
-            return  # EARLY RETURN, part_vals mutated
+            # NOTE: Splicing part_values is necessary because of code like
+            # ${undef:-'a b' c 'd # e'}.  Each part_value can have a different
+            # do_glob/do_elide setting.
+            if effect == effect_e.SpliceParts:
+              return  # EARLY RETURN, part_vals mutated
 
-          elif effect == effect_e.SpliceAndAssign:
-            if var_name is None:
-              # TODO: error context
-              e_die("Can't assign to special variable")
+            elif effect == effect_e.SpliceAndAssign:
+              if var_name is None:
+                # TODO: error context
+                e_die("Can't assign to special variable")
+              else:
+                # NOTE: This decays arrays too!  'set -o strict_array' could
+                # avoid it.
+                rhs_str = _DecayPartValuesToString(effect_part_vals,
+                                                   self.splitter.GetJoinChar())
+                state.SetLocalString(self.mem, var_name, rhs_str)
+              return  # EARLY RETURN, part_vals mutated
+
+            elif effect == effect_e.Error:
+              error_str = _DecayPartValuesToString(effect_part_vals,
+                                                   self.splitter.GetJoinChar())
+              e_die("unset variable %r", error_str, token=part.token)
+
             else:
-              # NOTE: This decays arrays too!  'set -o strict_array' could
-              # avoid it.
-              rhs_str = _DecayPartValuesToString(effect_part_vals,
-                                                 self.splitter.GetJoinChar())
-              state.SetLocalString(self.mem, var_name, rhs_str)
-            return  # EARLY RETURN, part_vals mutated
-
-          elif effect == effect_e.Error:
-            error_str = _DecayPartValuesToString(effect_part_vals,
-                                                 self.splitter.GetJoinChar())
-            e_die("unset variable %r", error_str, token=part.token)
+              pass  # do nothing, may still be undefined
 
           else:
-            pass  # do nothing, may still be undefined
+            val = self._EmptyStrOrError(val)  # maybe error
+            # Other suffix: value -> value
+            val = self._ApplyUnarySuffixOp(val, op)
 
-        else:
-          val = self._EmptyStrOrError(val)  # maybe error
-          # Other suffix: value -> value
-          val = self._ApplyUnarySuffixOp(val, op)
+        elif case(suffix_op_e.PatSub):  # PatSub, vectorized
+          op = cast(suffix_op__PatSub, UP_op)
+          val = self._EmptyStrOrError(val)  # ${undef//x/y}
 
-      elif UP_op.tag == suffix_op_e.PatSub:  # PatSub, vectorized
-        op = cast(suffix_op__PatSub, UP_op)
-        val = self._EmptyStrOrError(val)  # ${undef//x/y}
+          # globs are supported in the pattern
+          pat_val = self.EvalWordToString(op.pat, do_fnmatch=True)
+          assert pat_val.tag == value_e.Str, pat_val
 
-        # globs are supported in the pattern
-        pat_val = self.EvalWordToString(op.pat, do_fnmatch=True)
-        assert pat_val.tag == value_e.Str, pat_val
-
-        if op.replace:
-          replace_val = self.EvalWordToString(op.replace)
-          assert replace_val.tag == value_e.Str, replace_val
-          replace_str = replace_val.s
-        else:
-          replace_str = ''
-
-        regex, warnings = glob_.GlobToERE(pat_val.s)
-        if warnings:
-          # TODO:
-          # - Add 'set -o strict-glob' mode and expose warnings.
-          #   "Glob is not in CANONICAL FORM".
-          # - Propagate location info back to the 'op.pat' word.
-          pass
-        replacer = string_ops.GlobReplacer(regex, replace_str, op.spids[0])
-
-        UP_val = val
-        if UP_val.tag == value_e.Str:
-          val = cast(value__Str, UP_val)
-          s = replacer.Replace(val.s, op)
-          val = value.Str(s)
-
-        elif UP_val.tag == value_e.MaybeStrArray:
-          val = cast(value__MaybeStrArray, UP_val)
-          strs = []
-          for s in val.strs:
-            if s is not None:
-              strs.append(replacer.Replace(s, op))
-          val = value.MaybeStrArray(strs)
-
-        elif UP_val.tag == value_e.AssocArray:
-          val = cast(value__AssocArray, UP_val)
-          strs = []
-          for s in val.d.itervalues():
-            strs.append(replacer.Replace(s, op))
-          val = value.MaybeStrArray(strs)
-
-        else:
-          raise AssertionError(val.__class__.__name__)
-
-      elif UP_op.tag == suffix_op_e.Slice:
-        op = cast(suffix_op__Slice, UP_op)
-        val = self._EmptyStrOrError(val)  # ${undef:3:1}
-
-        if op.begin:
-          begin = self.arith_ev.Eval(op.begin)
-          assert isinstance(begin, int)
-        else:
-          begin = 0
-
-        if op.length:
-          length = self.arith_ev.Eval(op.length)
-          assert isinstance(length, int)
-        else:
-          length = None
-
-        try:
-          val = _PerformSlice(val, begin, length, part)
-        except (error.InvalidSlice, error.InvalidUtf8) as e:
-          if self.exec_opts.strict_word_eval:
-            raise
+          if op.replace:
+            replace_val = self.EvalWordToString(op.replace)
+            assert replace_val.tag == value_e.Str, replace_val
+            replace_str = replace_val.s
           else:
-            self.errfmt.PrettyPrintError(e, prefix='warning: ')
-            if val.tag == value_e.Str:
-              val = value.Str('')
-            elif val.tag == value_e.MaybeStrArray:
-              val = value.MaybeStrArray([])
+            replace_str = ''
+
+          regex, warnings = glob_.GlobToERE(pat_val.s)
+          if len(warnings):
+            # TODO:
+            # - Add 'set -o strict-glob' mode and expose warnings.
+            #   "Glob is not in CANONICAL FORM".
+            # - Propagate location info back to the 'op.pat' word.
+            pass
+          replacer = string_ops.GlobReplacer(regex, replace_str, op.spids[0])
+
+          UP_val = val
+          with tagswitch(val) as case2:
+            if case2(value_e.Str):
+              val = cast(value__Str, UP_val)
+              s = replacer.Replace(val.s, op)
+              val = value.Str(s)
+
+            elif case2(value_e.MaybeStrArray):
+              val = cast(value__MaybeStrArray, UP_val)
+              strs = []  # type: List[str]
+              for s in val.strs:
+                if s is not None:
+                  strs.append(replacer.Replace(s, op))
+              val = value.MaybeStrArray(strs)
+
+            elif case2(value_e.AssocArray):
+              val = cast(value__AssocArray, UP_val)
+              strs = []
+              for s in val.d.itervalues():
+                strs.append(replacer.Replace(s, op))
+              val = value.MaybeStrArray(strs)
+
             else:
-              raise NotImplementedError
+              raise AssertionError(val.tag_())
+
+        elif case(suffix_op_e.Slice):
+          op = cast(suffix_op__Slice, UP_op)
+          val = self._EmptyStrOrError(val)  # ${undef:3:1}
+
+          if op.begin:
+            begin = self.arith_ev.EvalToInt(op.begin)
+          else:
+            begin = 0
+
+          if op.length:
+            length = self.arith_ev.EvalToInt(op.length)
+          else:
+            length = None
+
+          try:
+            val = _PerformSlice(val, begin, length, part)
+          except (error.InvalidSlice, error.InvalidUtf8) as e:
+            if self.exec_opts.strict_word_eval:
+              raise
+            else:
+              self.errfmt.PrettyPrintError(e, prefix='warning: ')
+              with tagswitch(val) as case2:
+                if case2(value_e.Str):
+                  val = value.Str('')
+                elif case2(value_e.MaybeStrArray):
+                  val = value.MaybeStrArray([])
+                else:
+                  raise NotImplementedError()
 
     # After applying suffixes, process maybe_decay_array here.
     UP_val = val
-    if val.tag == value_e.MaybeStrArray:
+    if val.tag_() == value_e.MaybeStrArray:
       val = cast(value__MaybeStrArray, UP_val)
       if maybe_decay_array:
         val = self._DecayArray(val)
@@ -1029,21 +1079,25 @@ class _WordEvaluator(object):
 
   def _PartValsToString(self, part_vals, span_id):
     # type: (List[part_value_t], int) -> str
-    strs = []
+    strs = []  # type: List[str]
     for part_val in part_vals:
       UP_part_val = part_val
-      if UP_part_val.tag == part_value_e.String:
-        part_val = cast(part_value__String, UP_part_val)
-        s = part_val.s
-      elif UP_part_val.tag == part_value_e.Array:
-        part_val = cast(part_value__Array, UP_part_val)
-        if self.exec_opts.strict_array:
-          # Examples: echo f > "$@"; local foo="$@"
-          e_die("Illegal array word part (strict_array)",
-                span_id=span_id)
-        else:
-          # It appears to not respect IFS
-          s = ' '.join(s for s in part_val.strs if s is not None)
+      with tagswitch(part_val) as case:
+        if case(part_value_e.String):
+          part_val = cast(part_value__String, UP_part_val)
+          s = part_val.s
+
+        elif case(part_value_e.Array):
+          part_val = cast(part_value__Array, UP_part_val)
+          if self.exec_opts.strict_array:
+            # Examples: echo f > "$@"; local foo="$@"
+            e_die("Illegal array word part (strict_array)",
+                  span_id=span_id)
+          else:
+            # It appears to not respect IFS
+            # TODO: eliminate double join()?
+            tmp = [s for s in part_val.strs if s is not None]
+            s = ' '.join(tmp)
 
       strs.append(s)
 
@@ -1071,7 +1125,7 @@ class _WordEvaluator(object):
 
       # TODO: Special case for LINENO
       val = self.mem.GetVar(var_name)
-      if val.tag in (value_e.MaybeStrArray, value_e.AssocArray):
+      if val.tag_() in (value_e.MaybeStrArray, value_e.AssocArray):
         if var_name == _STRING_AND_ARRAY:
           bash_array_compat = True
         else:
@@ -1087,7 +1141,7 @@ class _WordEvaluator(object):
     #log('SIMPLE %s', part)
     val = self._EmptyStrOrError(val, token=token)
     UP_val = val
-    if val.tag == value_e.MaybeStrArray:
+    if val.tag_() == value_e.MaybeStrArray:
       val = cast(value__MaybeStrArray, UP_val)
       if maybe_decay_array:
         val = self._DecayArray(val)
@@ -1103,7 +1157,7 @@ class _WordEvaluator(object):
 
     Example: var x = "$foo-${foo}"
     """
-    part_vals = [] # type: List[part_value_t]
+    part_vals = []  # type: List[part_value_t]
     self._EvalSimpleVarSub(tok, part_vals, False)
     return self._PartValsToString(part_vals, tok.span_id)
 
@@ -1118,189 +1172,180 @@ class _WordEvaluator(object):
       None
     """
     UP_part = part
-    if UP_part.tag == word_part_e.ShArrayLiteral:
-      part = cast(sh_array_literal, UP_part)
-      e_die("Unexpected array literal", part=part)
-    elif UP_part.tag == word_part_e.AssocArrayLiteral:
-      part = cast(word_part__AssocArrayLiteral, UP_part)
-      e_die("Unexpected associative array literal", part=part)
+    with tagswitch(part) as case:
+      if case(word_part_e.ShArrayLiteral):
+        part = cast(sh_array_literal, UP_part)
+        e_die("Unexpected array literal", part=part)
+      elif case(word_part_e.AssocArrayLiteral):
+        part = cast(word_part__AssocArrayLiteral, UP_part)
+        e_die("Unexpected associative array literal", part=part)
 
-    elif UP_part.tag == word_part_e.Literal:
-      part = cast(Token, UP_part)
-      # Split if it's in a substitution.
-      # That is: echo is not split, but ${foo:-echo} is split
-      v = part_value.String(part.val, quoted, is_subst)
-      part_vals.append(v)
+      elif case(word_part_e.Literal):
+        part = cast(Token, UP_part)
+        # Split if it's in a substitution.
+        # That is: echo is not split, but ${foo:-echo} is split
+        v = part_value.String(part.val, quoted, is_subst)
+        part_vals.append(v)
 
-    elif UP_part.tag == word_part_e.EscapedLiteral:
-      part = cast(word_part__EscapedLiteral, UP_part)
-      tval = part.token.val
-      assert len(tval) == 2, tval  # e.g. \*
-      assert tval[0] == '\\'
-      s = tval[1]
-      v = part_value.String(s, True, False)
-      part_vals.append(v)
+      elif case(word_part_e.EscapedLiteral):
+        part = cast(word_part__EscapedLiteral, UP_part)
+        tval = part.token.val
+        assert len(tval) == 2, tval  # e.g. \*
+        assert tval[0] == '\\'
+        s = tval[1]
+        v = part_value.String(s, True, False)
+        part_vals.append(v)
 
-    elif UP_part.tag == word_part_e.SingleQuoted:
-      part = cast(single_quoted, UP_part)
-      s = EvalSingleQuoted(part)
-      v = part_value.String(s, True, False)
-      part_vals.append(v)
+      elif case(word_part_e.SingleQuoted):
+        part = cast(single_quoted, UP_part)
+        s = EvalSingleQuoted(part)
+        v = part_value.String(s, True, False)
+        part_vals.append(v)
 
-    elif UP_part.tag == word_part_e.DoubleQuoted:
-      part = cast(double_quoted, UP_part)
-      self._EvalDoubleQuoted(part.parts, part_vals)
+      elif case(word_part_e.DoubleQuoted):
+        part = cast(double_quoted, UP_part)
+        self._EvalDoubleQuoted(part.parts, part_vals)
 
-    elif UP_part.tag == word_part_e.CommandSub:
-      part = cast(command_sub, UP_part)
-      id_ = part.left_token.id
-      if id_ in (Id.Left_DollarParen, Id.Left_Backtick):
-        sv = self._EvalCommandSub(part.command_list, quoted) # type: part_value_t
+      elif case(word_part_e.CommandSub):
+        part = cast(command_sub, UP_part)
+        id_ = part.left_token.id
+        if id_ in (Id.Left_DollarParen, Id.Left_Backtick):
+          sv = self._EvalCommandSub(part.command_list, quoted) # type: part_value_t
 
-      elif id_ in (Id.Left_ProcSubIn, Id.Left_ProcSubOut):
-        sv = self._EvalProcessSub(part.command_list, id_)
+        elif id_ in (Id.Left_ProcSubIn, Id.Left_ProcSubOut):
+          sv = self._EvalProcessSub(part.command_list, id_)
+
+        else:
+          raise AssertionError(id_)
+
+        part_vals.append(sv)
+
+      elif case(word_part_e.SimpleVarSub):
+        part = cast(simple_var_sub, UP_part)
+        self._EvalSimpleVarSub(part.token, part_vals, quoted)
+
+      elif case(word_part_e.BracedVarSub):
+        part = cast(braced_var_sub, UP_part)
+        self._EvalBracedVarSub(part, part_vals, quoted)
+
+      elif case(word_part_e.TildeSub):
+        part = cast(word_part__TildeSub, UP_part)
+        # We never parse a quoted string into a TildeSub.
+        assert not quoted
+        s = self._EvalTildeSub(part.token)
+        v = part_value.String(s, True, False)  # NOT split even when unquoted!
+        part_vals.append(v)
+
+      elif case(word_part_e.ArithSub):
+        part = cast(word_part__ArithSub, UP_part)
+        num = self.arith_ev.EvalToInt(part.anode)
+        v = part_value.String(str(num), quoted, not quoted)
+        part_vals.append(v)
+
+      elif case(word_part_e.ExtGlob):
+        part = cast(word_part__ExtGlob, UP_part)
+        # Do NOT split these.
+        part_vals.append(part_value.String(part.op.val, False, False))
+        for i, w in enumerate(part.arms):
+          if i != 0:
+            part_vals.append(part_value.String('|', False, False))  # separator
+          # This flattens the tree!
+          self._EvalWordToParts(w, False, part_vals)  # eval like not quoted?
+        part_vals.append(part_value.String(')', False, False))  # closing )
+
+      elif case(word_part_e.Splice):
+        part = cast(word_part__Splice, UP_part)
+        var_name = part.name.val[1:]
+        val = self.mem.GetVar(var_name)
+
+        UP_val = val
+        with tagswitch(val) as case2:
+          if case2(value_e.MaybeStrArray):
+            val = cast(value__MaybeStrArray, UP_val)
+            items = val.strs
+          elif case2(value_e.AssocArray):
+            val = cast(value__AssocArray, UP_val)
+            items = val.d.keys()
+
+          # TODO: Get rid of this case!  Need to DEFER a lot of oil spec
+          # tests though.
+          elif case2(value_e.Obj):
+            if mylib.PYTHON:
+              val = cast(value__Obj, UP_val)
+              items = [str(item) for item in val.obj]
+            else:
+              raise AssertionError()
+
+          else:
+            e_die("Can't splice %r", var_name, part=part)
+
+        part_vals.append(part_value.Array(items))
+
+      elif case(word_part_e.FuncCall):
+        part = cast(word_part__FuncCall, UP_part)
+        if mylib.PYTHON:
+          func_name = part.name.val[1:]
+
+          fn_val = self.mem.GetVar(func_name) # type: value_t
+          if fn_val.tag != value_e.Obj:
+            e_die("Expected function named %r, got %r ", func_name, fn_val)
+          assert isinstance(fn_val, value__Obj)
+
+          func = fn_val.obj
+          pos_args, named_args = self.expr_ev.EvalArgList(part.args)
+
+          id_ = part.name.id
+          if id_ == Id.VSub_DollarName:
+            s = str(func(*pos_args, **named_args))
+            part_val = part_value.String(s) # type: part_value_t
+
+          elif id_ == Id.Lit_Splice:
+            # NOTE: Using iterable protocol as with @array.  TODO: Optimize this so
+            # it doesn't make a copy?
+            a = [str(item) for item in func(*pos_args, **named_args)]
+            part_val = part_value.Array(a)
+
+          else:
+            raise AssertionError(id_)
+
+          part_vals.append(part_val)
+
+      elif case(word_part_e.ExprSub):
+        if mylib.PYTHON:
+          part = cast(word_part__ExprSub, UP_part)
+          py_val = self.expr_ev.EvalExpr(part.child)
+          part_val = part_value.String(str(py_val))
+          part_vals.append(part_val)
 
       else:
-        raise AssertionError(id_)
+        raise AssertionError(part.tag_())
 
-      part_vals.append(sv)
-
-    elif UP_part.tag == word_part_e.SimpleVarSub:
-      part = cast(simple_var_sub, UP_part)
-      self._EvalSimpleVarSub(part.token, part_vals, quoted)
-
-    elif UP_part.tag == word_part_e.BracedVarSub:
-      part = cast(braced_var_sub, UP_part)
-      self._EvalBracedVarSub(part, part_vals, quoted)
-
-    elif UP_part.tag == word_part_e.TildeSub:
-      part = cast(word_part__TildeSub, UP_part)
-      # We never parse a quoted string into a TildeSub.
-      assert not quoted
-      s = self._EvalTildeSub(part.token)
-      v = part_value.String(s, True, False)  # NOT split even when unquoted!
-      part_vals.append(v)
-
-    elif UP_part.tag == word_part_e.ArithSub:
-      part = cast(word_part__ArithSub, UP_part)
-      num = self.arith_ev.Eval(part.anode)
-      v = part_value.String(str(num), quoted, not quoted)
-      part_vals.append(v)
-
-    elif UP_part.tag == word_part_e.ExtGlob:
-      part = cast(word_part__ExtGlob, UP_part)
-      # Do NOT split these.
-      part_vals.append(part_value.String(part.op.val, False, False))
-      for i, w in enumerate(part.arms):
-        if i != 0:
-          part_vals.append(part_value.String('|', False, False))  # separator
-        # This flattens the tree!
-        self._EvalWordToParts(w, False, part_vals)  # eval like not quoted?
-      part_vals.append(part_value.String(')', False, False))  # closing )
-
-    elif UP_part.tag == word_part_e.Splice:
-      part = cast(word_part__Splice, UP_part)
-      var_name = part.name.val[1:]
-      val = self.mem.GetVar(var_name)
-
-      UP_val = val
-      if UP_val.tag == value_e.Str:
-        val = cast(value__Str, UP_val)
-        obj = val.s # type: Any
-      elif UP_val.tag == value_e.MaybeStrArray:
-        val = cast(value__MaybeStrArray, UP_val)
-        obj = val.strs
-      elif UP_val.tag == value_e.AssocArray:
-        val = cast(value__AssocArray, UP_val)
-        obj = val.d
-      elif UP_val.tag == value_e.Obj:
-        val = cast(value__Obj, UP_val)
-        obj = val.obj
-      else:
-        e_die("Can't splice %r", var_name, part=part)
-
-      # Use iterable protocol and convert each item to a string.  This means
-      # you can splice in dicts too.  # TODO: Optimize this so it doesn't make
-      # a copy in the common case that it's already an Array/string.
-      #
-      # TODO: Strings should not be iterable over their bytes either!  Need
-      # separate .bytes() and .runes().
-      av = part_value.Array([str(item) for item in obj])
-      part_vals.append(av)
-
-    elif UP_part.tag == word_part_e.FuncCall:
-      part = cast(word_part__FuncCall, UP_part)
-      func_name = part.name.val[1:]
-
-      fn_val = self.mem.GetVar(func_name) # type: value_t
-      if fn_val.tag != value_e.Obj:
-        e_die("Expected function named %r, got %r ", func_name, fn_val)
-      assert isinstance(fn_val, value__Obj)
-
-      func = fn_val.obj
-      pos_args, named_args = self.expr_ev.EvalArgList(part.args)
-
-      id_ = part.name.id
-      if id_ == Id.VSub_DollarName:
-        s = str(func(*pos_args, **named_args))
-        part_val = part_value.String(s) # type: part_value_t
-
-      elif id_ == Id.Lit_Splice:
-        # NOTE: Using iterable protocol as with @array.  TODO: Optimize this so
-        # it doesn't make a copy?
-        a = [str(item) for item in func(*pos_args, **named_args)]
-        part_val = part_value.Array(a)
-
-      else:
-        raise AssertionError(id_)
-
-      part_vals.append(part_val)
-
-    elif UP_part.tag == word_part_e.ExprSub:
-      part = cast(word_part__ExprSub, UP_part)
-      py_val = self.expr_ev.EvalExpr(part.child)
-      part_val = part_value.String(str(py_val))
-      part_vals.append(part_val)
-
-    else:
-      raise AssertionError(part.__class__.__name__)
-
-  def _EvalWordToParts(self, word, quoted, part_vals, is_subst=False):
-    # type: (Union[word_t], bool, List[part_value_t], bool) -> None
+  def _EvalWordToParts(self, w, quoted, part_vals, is_subst=False):
+    # type: (word_t, bool, List[part_value_t], bool) -> None
     """Helper for EvalRhsWord, EvalWordSequence, etc.
 
     Returns:
       List of part_value.
       But note that this is a TREE.
     """
-    UP_word = word
-    if UP_word.tag == word_e.Compound:
-      word = cast(compound_word, UP_word)
-      for p in word.parts:
-        self._EvalWordPart(p, part_vals, quoted=quoted, is_subst=is_subst)
+    UP_w = w
+    with tagswitch(w) as case:
+      if case(word_e.Compound):
+        w = cast(compound_word, UP_w)
+        for p in w.parts:
+          self._EvalWordPart(p, part_vals, quoted=quoted, is_subst=is_subst)
 
-    elif UP_word.tag == word_e.Empty:
-      part_vals.append(part_value.String('', quoted, not quoted))
+      elif case(word_e.Empty):
+        part_vals.append(part_value.String('', quoted, not quoted))
 
-    else:
-      raise AssertionError(word.__class__.__name__)
+      else:
+        raise AssertionError(w.tag_())
 
-  # Do we need this?
-  def EvalWordToPattern(self, word):
-    # type: (Any) -> None
-    """
-    Given a word, returns pattern.ERE if has an ExtGlob, or pattern.Fnmatch
-    otherwise.
-
-    NOTE: Have to handle nested extglob like: [[ foo == ${empty:-@(foo|bar) ]]
-    """
-    pass
-
-  def EvalWordToString(self, word, do_fnmatch=False, do_ere=False):
+  def EvalWordToString(self, UP_w, do_fnmatch=False, do_ere=False):
     # type: (word_t, bool, bool) -> value__Str
     """
     Args:
-      word: Compound
+      w: Compound
 
     Used for redirect arg, ControlFlow arg, ArithWord, BoolWord, etc.
 
@@ -1314,49 +1359,53 @@ class _WordEvaluator(object):
 
     TODO: Raise AssertionError if it has ExtGlob.
     """
-    if word.tag == word_e.Empty:
+    if UP_w.tag_() == word_e.Empty:
       return value.Str('')
 
-    assert isinstance(word, compound_word)
+    assert UP_w.tag_() == word_e.Compound, UP_w
+    w = cast(compound_word, UP_w)
 
-    part_vals = [] # type: List[part_value_t]
-    for p in word.parts:
+    part_vals = []  # type: List[part_value_t]
+    for p in w.parts:
       self._EvalWordPart(p, part_vals, quoted=False)
 
-    strs = []
+    strs = []  # type: List[str]
     for part_val in part_vals:
       UP_part_val = part_val
-      if UP_part_val.tag == part_value_e.String:
-        part_val = cast(part_value__String, UP_part_val)
-        # [[ foo == */"*".py ]] or case *.py) ... esac
-        if do_fnmatch and part_val.quoted:
-          s = glob_.GlobEscape(part_val.s)
-        elif do_ere and part_val.quoted:
-          s = glob_.ExtendedRegexEscape(part_val.s)
-        else:
-          s = part_val.s
-      elif UP_part_val.tag == part_value_e.Array:
-        part_val = cast(part_value__Array, UP_part_val)
-        if self.exec_opts.strict_array:
-          # Examples: echo f > "$@"; local foo="$@"
+      with tagswitch(part_val) as case:
+        if case(part_value_e.String):
+          part_val = cast(part_value__String, UP_part_val)
+          # [[ foo == */"*".py ]] or case *.py) ... esac
+          if do_fnmatch and part_val.quoted:
+            s = glob_.GlobEscape(part_val.s)
+          elif do_ere and part_val.quoted:
+            s = glob_.ExtendedRegexEscape(part_val.s)
+          else:
+            s = part_val.s
 
-          # TODO: This attributes too coarsely, to the word rather than the
-          # parts.  Problem: the word is a TREE of parts, but we only have a
-          # flat list of part_vals.  The only case where we really get arrays
-          # is "$@", "${a[@]}", "${a[@]//pat/replace}", etc.
-          e_die("This word should yield a string, but it contains an array",
-                word=word)
+        elif case(part_value_e.Array):
+          part_val = cast(part_value__Array, UP_part_val)
+          if self.exec_opts.strict_array:
+            # Examples: echo f > "$@"; local foo="$@"
 
-          # TODO: Maybe add detail like this.
-          #e_die('RHS of assignment should only have strings.  '
-          #      'To assign arrays, use b=( "${a[@]}" )')
-        else:
-          # It appears to not respect IFS
-          s = ' '.join(s for s in part_val.strs if s is not None)
+            # TODO: This attributes too coarsely, to the word rather than the
+            # parts.  Problem: the word is a TREE of parts, but we only have a
+            # flat list of part_vals.  The only case where we really get arrays
+            # is "$@", "${a[@]}", "${a[@]//pat/replace}", etc.
+            e_die("This word should yield a string, but it contains an array",
+                  word=w)
+
+            # TODO: Maybe add detail like this.
+            #e_die('RHS of assignment should only have strings.  '
+            #      'To assign arrays, use b=( "${a[@]}" )')
+          else:
+            # It appears to not respect IFS
+            tmp = [s for s in part_val.strs if s is not None]
+            s = ' '.join(tmp)  # TODO: eliminate double join()?
 
       strs.append(s)
 
-    #log('EvalWordToString %s', word.parts)
+    #log('EvalWordToString %s', w.parts)
     return value.Str(''.join(strs))
 
   def EvalForPlugin(self, w):
@@ -1380,22 +1429,23 @@ class _WordEvaluator(object):
       self.mem.PopStatusFrame()
     return val
 
-  def EvalRhsWord(self, word):
+  def EvalRhsWord(self, UP_w):
     # type: (word_t) -> value_t
-    """syntax.word -> value
-
-    Used for RHS of assignment.  There is no splitting.
+    """Used for RHS of assignment.  There is no splitting.
     """
-    if word.tag == word_e.Empty:
+    if UP_w.tag_() == word_e.Empty:
       return value.Str('')
-    assert isinstance(word, compound_word)
 
-    if len(word.parts) == 1:
-      part0 = word.parts[0]
+    assert UP_w.tag_() == word_e.Compound, UP_w
+    w = cast(compound_word, UP_w)
+
+    if len(w.parts) == 1:
+      part0 = w.parts[0]
       UP_part0 = part0
+      tag = part0.tag_()
       # Special case for a=(1 2).  ShArrayLiteral won't appear in words that
       # don't look like assignments.
-      if UP_part0.tag == word_part_e.ShArrayLiteral:
+      if tag == word_part_e.ShArrayLiteral:
         part0 = cast(sh_array_literal, UP_part0)
         array_words = part0.words
         words = braces.BraceExpandWords(array_words)
@@ -1403,7 +1453,7 @@ class _WordEvaluator(object):
         #log('ARRAY LITERAL EVALUATED TO -> %s', strs)
         return value.MaybeStrArray(strs)
 
-      if UP_part0.tag == word_part_e.AssocArrayLiteral:
+      if tag == word_part_e.AssocArrayLiteral:
         part0 = cast(word_part__AssocArrayLiteral, UP_part0)
         d = {}
         n = len(part0.pairs)
@@ -1416,7 +1466,7 @@ class _WordEvaluator(object):
         return value.AssocArray(d)
 
     # If RHS doens't look like a=( ... ), then it must be a string.
-    return self.EvalWordToString(word)
+    return self.EvalWordToString(w)
 
   def _EvalWordFrame(self, frame, argv):
     # type: (List[Tuple[str, bool, bool]], List[str]) -> None
@@ -1427,7 +1477,7 @@ class _WordEvaluator(object):
     #log('--- frame %s', frame)
 
     for s, quoted, _ in frame:
-      if s:
+      if len(s):
         all_empty = False
 
       if quoted:
@@ -1442,14 +1492,15 @@ class _WordEvaluator(object):
     # If every frag is quoted, e.g. "$a$b" or any part in "${a[@]}"x, then
     # don't do word splitting or globbing.
     if all_quoted:
-      a = ''.join(s for s, _, _ in frame)
+      tmp = [s for s, _, _ in frame]
+      a = ''.join(tmp)
       argv.append(a)
       return
 
     will_glob = not self.exec_opts.noglob
 
     # Array of strings, some of which are BOTH IFS-escaped and GLOB escaped!
-    frags = []
+    frags = []  # type: List[str]
     for frag, quoted, do_split in frame:
       if will_glob:
         if quoted:
@@ -1495,13 +1546,14 @@ class _WordEvaluator(object):
     Example: declare -"${a[@]}" b=(1 2)
     where a is [x b=a d=a]
     """
-    part_vals = [] # type: List[part_value_t]
+    part_vals = []  # type: List[part_value_t]
     self._EvalWordToParts(w, False, part_vals)  # not double quoted
     frames = _MakeWordFrames(part_vals)
-    argv = []
+    argv = []  # type: List[str]
     for frame in frames:
-      if frame:  # empty array gives empty frame!
-        argv.append(''.join(s for (s, _, _) in frame))  # no split or glob
+      if len(frame):  # empty array gives empty frame!
+        tmp = [s for (s, _, _) in frame]
+        argv.append(''.join(tmp))  # no split or glob
     #log('argv: %s', argv)
     return argv
 
@@ -1521,25 +1573,11 @@ class _WordEvaluator(object):
     # There is also command -p, but we haven't implemented it.  Maybe just punt
     # on it.  Punted on 'builtin' and 'command' for now too.
 
-    def _SplitAssignArg(arg,  # type: str
-                        w,  # type: compound_word
-                        ):
-      # type: (...) -> Tuple[lvalue__Named, Optional[value__Str]]
-      i = arg.find('=')
-      prefix = arg[:i]
-      if i != -1 and match.IsValidVarName(prefix):
-        return lvalue.Named(prefix), value.Str(arg[i+1:]),
-      else:
-        if match.IsValidVarName(arg):  # local foo   # foo becomes undefined
-          return lvalue.Named(arg), None
-        else:
-          e_die("Invalid variable name %r", arg, word=w)
-
     started_pairs = False
 
     flags = [arg0]
     flag_spids = [word_.LeftMostSpanForWord(words[0])]
-    assign_args = []
+    assign_args = []  # type: List[assign_arg]
 
     n = len(words)
     for i in xrange(1, n):  # skip first word
@@ -1561,11 +1599,13 @@ class _WordEvaluator(object):
 
           left = lvalue.Named(tok_val[:-1])
           if part_offset == len(w.parts):
-            rhs_word = word.Empty()  # type: Union[word__Empty, compound_word]
+            rhs_word = word.Empty()  # type: word_t
           else:
             rhs_word = compound_word(w.parts[part_offset:])
             # tilde detection only happens on static assignments!
-            rhs_word = word_.TildeDetect(rhs_word) or rhs_word
+            tmp = word_.TildeDetect(rhs_word) 
+            if tmp:
+              rhs_word = tmp
 
           right = self.EvalRhsWord(rhs_word)
           arg2 = assign_arg(left, right, word_spid)
@@ -1596,8 +1636,8 @@ class _WordEvaluator(object):
     # type: (List[compound_word], bool) -> cmd_value_t
     """Static word evaluation for Oil."""
     #log('W %s', words)
-    strs = []
-    spids = []
+    strs = []  # type: List[str]
+    spids = []  # type: List[int]
 
     n = 0
     for i, w in enumerate(words):
@@ -1626,7 +1666,7 @@ class _WordEvaluator(object):
           spids.append(word_spid)
         continue
 
-      part_vals = [] # type: List[part_value_t]
+      part_vals = []  # type: List[part_value_t]
       self._EvalWordToParts(w, False, part_vals)  # not double quoted
 
       if 0:
@@ -1647,11 +1687,12 @@ class _WordEvaluator(object):
       # We will still allow x"${a[@]"x, though it's deprecated by @a, which
       # disallows such expressions at parse time.
       for frame in frames:
-        if frame:  # empty array gives empty frame!
-          strs.append(''.join(s for (s, _, _) in frame))  # no split or glob
+        if len(frame):  # empty array gives empty frame!
+          tmp = [s for (s, _, _) in frame]
+          strs.append(''.join(tmp))  # no split or glob
           spids.append(word_spid)
 
-    return cmd_value.Argv(strs, spids)
+    return cmd_value.Argv(strs, spids, None)
 
   def EvalWordSequence2(self, words, allow_assign=False):
     # type: (List[compound_word], bool) -> cmd_value_t
@@ -1681,12 +1722,12 @@ class _WordEvaluator(object):
     # 5. globbing -- several exec_opts affect this: nullglob, safeglob, etc.
 
     #log('W %s', words)
-    strs = [] # type: List[str]
-    spids = []
+    strs = []  # type: List[str]
+    spids = []  # type: List[int]
 
     n = 0
     for i, w in enumerate(words):
-      part_vals = [] # type: List[part_value_t]
+      part_vals = []  # type: List[part_value_t]
       self._EvalWordToParts(w, False, part_vals)  # not double quoted
 
       # DYNAMICALLY detect if we're going to run an assignment builtin, and
@@ -1701,10 +1742,13 @@ class _WordEvaluator(object):
 
       if allow_assign and i == 0 and len(part_vals) == 1:
         val0 = part_vals[0]
-        if isinstance(val0, part_value__String) and not val0.quoted:
-          builtin_id = builtin.ResolveAssign(val0.s)
-          if builtin_id != builtin_e.NONE:
-            return self._EvalAssignBuiltin(builtin_id, val0.s, words)
+        UP_val0 = val0
+        if val0.tag_() == part_value_e.String:
+          val0 = cast(part_value__String, UP_val0)
+          if not val0.quoted:
+            builtin_id = builtin.ResolveAssign(val0.s)
+            if builtin_id != builtin_e.NONE:
+              return self._EvalAssignBuiltin(builtin_id, val0.s, words)
 
       if 0:
         log('')
@@ -1733,14 +1777,29 @@ class _WordEvaluator(object):
     # A non-assignment command.
     # NOTE: Can't look up builtins here like we did for assignment, because
     # functions can override builtins.
-    return cmd_value.Argv(strs, spids)
+    return cmd_value.Argv(strs, spids, None)
 
   def EvalWordSequence(self, words):
     # type: (List[compound_word]) -> List[str]
     """For arrays and for loops.  They don't allow assignment builtins."""
-    cmd_val = self.EvalWordSequence2(words)
-    assert isinstance(cmd_val, (cmd_value__Argv, cmd_value__Assign))
+    UP_cmd_val = self.EvalWordSequence2(words)
+
+    assert UP_cmd_val.tag_() == cmd_value_e.Argv
+    cmd_val = cast(cmd_value__Argv, UP_cmd_val)
     return cmd_val.argv
+
+
+def _SplitAssignArg(arg, w):
+  # type: (str, compound_word) -> Tuple[lvalue__Named, Optional[value__Str]]
+  i = arg.find('=')
+  prefix = arg[:i]
+  if i != -1 and match.IsValidVarName(prefix):
+    return lvalue.Named(prefix), value.Str(arg[i+1:]),
+  else:
+    if match.IsValidVarName(arg):  # local foo   # foo becomes undefined
+      return lvalue.Named(arg), None
+    else:
+      e_die("Invalid variable name %r", arg, word=w)
 
 
 class NormalWordEvaluator(_WordEvaluator):

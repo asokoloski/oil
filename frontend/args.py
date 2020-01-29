@@ -62,7 +62,7 @@ from core.util import log
 import libc  # for regex support
 
 from typing import Tuple, Optional, Dict, Union, List, Any, IO, TYPE_CHECKING
-from _devbuild.gen.runtime_asdl import arg_vector, cmd_value__Argv
+from _devbuild.gen.runtime_asdl import cmd_value__Argv
 
 if TYPE_CHECKING:
   OptChange = Tuple[str, bool]
@@ -736,10 +736,10 @@ class BuiltinFlags(object):
 
     return out, arg_r.i
 
-  def ParseVec(self, arg_vec):
-    # type: (arg_vector) -> Tuple[_Attributes, int]
+  def ParseVec(self, cmd_val):
+    # type: (cmd_value__Argv) -> Tuple[_Attributes, int]
     """For OSH builtins."""
-    arg_r = Reader(arg_vec.strs, spids=arg_vec.spids)
+    arg_r = Reader(cmd_val.argv, spids=cmd_val.arg_spids)
     arg_r.Next()  # move past the builtin name
     return self.Parse(arg_r)
 

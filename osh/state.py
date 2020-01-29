@@ -1043,6 +1043,17 @@ class Mem(object):
       namespace = self.var_stack[0]
       return namespace.get(name), namespace
 
+    elif lookup_mode == scope_e.LocalOrGlobal:
+      # Local
+      namespace = self.var_stack[-1]
+      cell = namespace.get(name)
+      if cell:
+        return cell, namespace
+
+      # Global
+      namespace = self.var_stack[0]
+      return namespace.get(name), namespace
+
     else:
       raise AssertionError(lookup_mode)
 
@@ -1070,7 +1081,7 @@ class Mem(object):
       # TODO: Point at the ORIGINAL declaration!
       e_die("%r has already been declared", lval.name)
 
-    if cell is None and keyword_id in (Id.KW_Set, Id.KW_SetVar):
+    if cell is None and keyword_id in (Id.KW_Set, Id.KW_SetGlobal):
       # NOTE: all 3 variants of 'lvalue' have 'name'
       e_die("%r hasn't been declared", lval.name)
 
@@ -1148,6 +1159,7 @@ class Mem(object):
         e_die("Can't export array")  # TODO: error context
 
     elif lval.tag == lvalue_e.Indexed:
+      assert isinstance(lval.index, int), lval
       # There is no syntax 'declare a[x]'
       assert val is not None, val
 
@@ -1422,6 +1434,7 @@ class Mem(object):
     result = {}
     for scope in self.var_stack:
       for name, cell in scope.iteritems():
+        # TODO: Show other types?
         if isinstance(cell.val, value__Str):
           result[name] = cell.val.s
     return result

@@ -62,7 +62,7 @@ from _devbuild.gen.runtime_asdl import (
     lvalue, lvalue_e, lvalue__ObjIndex, lvalue__ObjAttr,
     value, value_e, value_t, value__Str, value__MaybeStrArray, value__Obj,
     redirect, scope_e, var_flags_e, builtin_e,
-    arg_vector, cmd_value, cmd_value_e,
+    cmd_value__Argv, cmd_value, cmd_value_e,
     cmd_value__Argv, cmd_value__Assign,
 )
 from _devbuild.gen.types_asdl import redir_arg_type_e
@@ -79,7 +79,6 @@ from core.util import log, e_die
 from frontend import args
 from frontend import reader
 
-from oil_lang import builtin_oil
 from oil_lang import objects
 from osh import braces
 from osh import builtin
@@ -88,13 +87,16 @@ from osh import expr_eval
 from osh import state
 from osh import word_
 
+from mycpp import mylib
+from mycpp.mylib import switch, tagswitch
+
 import posix_ as posix
 try:
   import libc  # for fnmatch
 except ImportError:
   from benchmarks import fake_libc as libc  # type: ignore
 
-from typing import List, Dict, Tuple, Any, Callable, Union, cast, TYPE_CHECKING
+from typing import List, Dict, Tuple, Any, Callable, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
   from _devbuild.gen.id_kind_asdl import Id_t
@@ -105,21 +107,6 @@ if TYPE_CHECKING:
   from _devbuild.gen.syntax_asdl import (
       Token, source_t, redir_t, expr__Lambda, env_pair, proc_sig__Closed,
   )
-  RedirectableCommand = Union[
-      command__Simple,
-      command__ExpandedAlias,
-      command__ShAssignment,
-      command__DoGroup,
-      command__BraceGroup,
-      command__Subshell,
-      command__DParen,
-      command__DBracket,
-      command__ForEach,
-      command__ForExpr,
-      command__WhileUntil,
-      command__If,
-      command__Case,
-  ]
   from core.ui import ErrorFormatter
   from frontend.parse_lib import ParseContext
   from core import dev
@@ -129,8 +116,6 @@ if TYPE_CHECKING:
   from osh import builtin_process
   from osh import prompt
   from osh import split
-else:
-  RedirectableCommand = Any
 
 
 # Python type name -> Oil type name
@@ -249,26 +234,27 @@ class Deps(object):
     self.waiter = None      # type: process.Waiter
 
 
-def _PyObjectToVal(py_val):
-  # type: (Any) -> Any
-  """
-  Maintain the 'value' invariant in osh/runtime.asdl.
+if mylib.PYTHON:
+  def _PyObjectToVal(py_val):
+    # type: (Any) -> Any
+    """
+    Maintain the 'value' invariant in osh/runtime.asdl.
 
-  TODO: Move this to Mem and combine with LookupVar in oil_lang/expr_eval.py.
-  They are opposites.
-  """
-  if isinstance(py_val, str):  # var s = "hello $name"
-    val = value.Str(py_val)  # type: Any
-  elif isinstance(py_val, objects.StrArray):  # var a = @(a b)
-    # It's safe to convert StrArray to MaybeStrArray.
-    val = value.MaybeStrArray(py_val)
-  elif isinstance(py_val, dict):  # var d = {name: "bob"}
-    # TODO: Is this necessary?  Shell assoc arrays aren't nested and don't have
-    # arbitrary values.
-    val = value.AssocArray(py_val)
-  else:
-    val = value.Obj(py_val)
-  return val
+    TODO: Move this to Mem and combine with LookupVar in oil_lang/expr_eval.py.
+    They are opposites.
+    """
+    if isinstance(py_val, str):  # var s = "hello $name"
+      val = value.Str(py_val)  # type: Any
+    elif isinstance(py_val, objects.StrArray):  # var a = @(a b)
+      # It's safe to convert StrArray to MaybeStrArray.
+      val = value.MaybeStrArray(py_val)
+    elif isinstance(py_val, dict):  # var d = {name: "bob"}
+      # TODO: Is this necessary?  Shell assoc arrays aren't nested and don't have
+      # arbitrary values.
+      val = value.AssocArray(py_val)
+    else:
+      val = value.Obj(py_val)
+    return val
 
 
 class Executor(object):
@@ -281,10 +267,7 @@ class Executor(object):
                mem,          # type: state.Mem
                fd_state,     # type: process.FdState
                procs,        # type: Dict[str, command__ShFunction]
-               # the Union[...] callable argument is needed because regular
-               # builtins work differently from assignment builtins
-               # (anything in osh.builtin_assign).
-               builtins,     # type: Dict[builtin_t, Callable[[Union[arg_vector, cmd_value__Assign]], int]]
+               builtins,     # type: Dict[builtin_t, Callable[[cmd_value_t], int]]
                exec_opts,    # type: state.ExecOpts
                parse_ctx,    # type: ParseContext
                exec_deps,    # type: Deps
@@ -342,17 +325,17 @@ class Executor(object):
     finally:
       self.arena.PopSource()
 
-  def _Eval(self, arg_vec):
-    # type: (arg_vector) -> int
+  def _Eval(self, cmd_val):
+    # type: (cmd_value__Argv) -> int
     if self.exec_opts.strict_eval_builtin:
       # To be less confusing, eval accepts EXACTLY one string arg.
-      n = len(arg_vec.strs)
+      n = len(cmd_val.argv)
       if n != 2:
         raise args.UsageError('requires exactly 1 argument, got %d' % (n-1))
-      code_str = arg_vec.strs[1]
+      code_str = cmd_val.argv[1]
     else:
-      code_str = ' '.join(arg_vec.strs[1:])
-    eval_spid = arg_vec.spids[0]
+      code_str = ' '.join(cmd_val.argv[1:])
+    eval_spid = cmd_val.arg_spids[0]
 
     line_reader = reader.StringLineReader(code_str, self.arena)
     c_parser = self.parse_ctx.MakeOshParser(line_reader)
@@ -383,10 +366,10 @@ class Executor(object):
 
     return node
 
-  def _Source(self, arg_vec):
-    # type: (arg_vector) -> int
-    argv = arg_vec.strs
-    call_spid = arg_vec.spids[0]
+  def _Source(self, cmd_val):
+    # type: (cmd_value__Argv) -> int
+    argv = cmd_val.argv
+    call_spid = cmd_val.arg_spids[0]
 
     try:
       path = argv[1]
@@ -400,7 +383,7 @@ class Executor(object):
       f = self.fd_state.Open(resolved)  # Shell can't use descriptors 3-9
     except OSError as e:
       self.errfmt.Print('source %r failed: %s', path, posix.strerror(e.errno),
-                        span_id=arg_vec.spids[1])
+                        span_id=cmd_val.arg_spids[1])
       return 1
 
     try:
@@ -427,23 +410,23 @@ class Executor(object):
     finally:
       f.close()
 
-  def _Exec(self, arg_vec):
-    # type: (arg_vector) -> int
+  def _Exec(self, cmd_val):
+    # type: (cmd_value__Argv) -> int
     # Apply redirects in this shell.  # NOTE: Redirects were processed earlier.
-    if len(arg_vec.strs) == 1:
+    if len(cmd_val.argv) == 1:
       return 0
 
     environ = self.mem.GetExported()
-    cmd = arg_vec.strs[1]
+    cmd = cmd_val.argv[1]
     argv0_path = self.search_path.CachedLookup(cmd)
     if argv0_path is None:
       self.errfmt.Print('exec: %r not found', cmd,
-                        span_id=arg_vec.spids[1])
+                        span_id=cmd_val.arg_spids[1])
       sys.exit(127)  # exec never returns
 
     # shift off 'exec'
-    arg_vec2 = arg_vector(arg_vec.strs[1:], arg_vec.spids[1:])
-    self.ext_prog.Exec(argv0_path, arg_vec2, environ)  # NEVER RETURNS
+    c2 = cmd_value.Argv(cmd_val.argv[1:], cmd_val.arg_spids[1:])
+    self.ext_prog.Exec(argv0_path, c2, environ)  # NEVER RETURNS
     assert False, "This line should never be reached" # makes mypy happy
 
   def _RunBuiltinAndRaise(self, builtin_id, cmd_val, fork_external):
@@ -454,9 +437,6 @@ class Executor(object):
     """
     # Shift one arg.  Builtins don't need to know their own name.
     argv = cmd_val.argv[1:]
-
-    # STUB for compatibility
-    arg_vec = arg_vector(cmd_val.argv, cmd_val.arg_spids)
 
     # TODO: For now, hard-code the builtins that take a block, and pass them
     # cmd_val.
@@ -469,46 +449,41 @@ class Executor(object):
     # Most builtins dispatch with a dictionary
     builtin_func = self.builtins.get(builtin_id)
     if builtin_func is not None:
-      # Pass the block
-      if isinstance(builtin_func,
-          (builtin.Cd, builtin_oil.Use, builtin_oil.Json)):
-        status = builtin_func(cmd_val)
-      else:
-        status = builtin_func(arg_vec)
+      status = builtin_func(cmd_val)
 
     # Some builtins "belong" to the executor.
 
     elif builtin_id == builtin_e.EXEC:
-      status = self._Exec(arg_vec)  # may never return
+      status = self._Exec(cmd_val)  # may never return
       # But if it returns, then we want to permanently apply the redirects
       # associated with it.
       self.fd_state.MakePermanent()
 
     elif builtin_id == builtin_e.EVAL:
-      status = self._Eval(arg_vec)
+      status = self._Eval(cmd_val)
 
     elif builtin_id in (builtin_e.SOURCE, builtin_e.DOT):
-      status = self._Source(arg_vec)
+      status = self._Source(cmd_val)
 
     elif builtin_id == builtin_e.COMMAND:
       # TODO: How do we handle fork_external?  It doesn't fit the common
       # signature.  We also don't handle 'command local', etc.
       b = builtin_pure.Command(self, self.procs, self.aliases,
                                self.search_path)
-      status = b(arg_vec, fork_external)
+      status = b(cmd_val, fork_external)
 
     elif builtin_id == builtin_e.BUILTIN:  # NOTE: uses early return style
-      if not argv:
+      if len(argv) == 0:
         return 0  # this could be an error in strict mode?
 
-      name = arg_vec.strs[1]
+      name = cmd_val.argv[1]
 
       # Run regular builtin or special builtin
       to_run = builtin.Resolve(name)
       if to_run == builtin_e.NONE:
         to_run = builtin.ResolveSpecial(name)
       if to_run == builtin_e.NONE:
-        span_id = arg_vec.spids[1]
+        span_id = cmd_val.arg_spids[1]
         if builtin.ResolveAssign(name) != builtin_e.NONE:
           # NOTE: There's a similar restriction for 'command'
           self.errfmt.Print("Can't run assignment builtin recursively",
@@ -703,7 +678,7 @@ class Executor(object):
       raise AssertionError('Unknown redirect type')
 
   def _EvalRedirects(self, node):
-    # type: (RedirectableCommand) -> List[redirect_t]
+    # type: (command_t) -> List[redirect_t]
     """Evaluate redirect nodes to concrete objects.
 
     We have to do this every time, because you could have something like:
@@ -718,7 +693,57 @@ class Executor(object):
     Raises:
       RedirectEvalError
     """
-    return [self._EvalRedirect(redir) for redir in node.redirects]
+    # This is kind of lame because we have two switches over command_e: one for
+    # redirects, and to evaluate the node.  But it's what you would do in C++ I
+    # suppose.  We could also inline them.  Or maybe use RAII.
+    UP_node = node
+    with tagswitch(node) as case:
+      if case(command_e.Simple):
+        node = cast(command__Simple, UP_node)
+        redirects = node.redirects
+      elif case(command_e.ExpandedAlias):
+        node = cast(command__ExpandedAlias, UP_node)
+        redirects = node.redirects
+      elif case(command_e.ShAssignment):
+        node = cast(command__ShAssignment, UP_node)
+        redirects = node.redirects
+      elif case(command_e.DoGroup):
+        node = cast(command__DoGroup, UP_node)
+        redirects = node.redirects
+      elif case(command_e.BraceGroup):
+        node = cast(command__BraceGroup, UP_node)
+        redirects = node.redirects
+      elif case(command_e.Subshell):
+        node = cast(command__Subshell, UP_node)
+        redirects = node.redirects
+      elif case(command_e.DParen):
+        node = cast(command__DParen, UP_node)
+        redirects = node.redirects
+      elif case(command_e.DBracket):
+        node = cast(command__DBracket, UP_node)
+        redirects = node.redirects
+      elif case(command_e.ForEach):
+        node = cast(command__ForEach, UP_node)
+        redirects = node.redirects
+      elif case(command_e.ForExpr):
+        node = cast(command__ForExpr, UP_node)
+        redirects = node.redirects
+      elif case(command_e.WhileUntil):
+        node = cast(command__WhileUntil, UP_node)
+        redirects = node.redirects
+      elif case(command_e.If):
+        node = cast(command__If, UP_node)
+        redirects = node.redirects
+      elif case(command_e.Case):
+        node = cast(command__Case, UP_node)
+        redirects = node.redirects
+      else:
+        raise AssertionError
+
+    result = []
+    for redir in redirects:
+      result.append(self._EvalRedirect(redir))
+    return result
 
   def _MakeProcess(self, node, parent_pipeline=None, inherit_errexit=True):
     # type: (command_t, process.Pipeline, bool) -> process.Process
@@ -778,7 +803,7 @@ class Executor(object):
     span_id = cmd_val.arg_spids[0] if cmd_val.arg_spids else runtime.NO_SPID
 
     # This happens when you write "$@" but have no arguments.
-    if not argv:
+    if len(argv) == 0:
       if self.exec_opts.strict_argv:
         e_die("Command evaluated to an empty argv array",
               span_id=span_id)
@@ -834,11 +859,12 @@ class Executor(object):
       # isinstance(val.obj, objects.Proc)
       UP_val = self.mem.GetVar(arg0)
 
-      if UP_val.tag == value_e.Obj:
-        val = cast(value__Obj, UP_val)
-        if isinstance(val.obj, objects.Proc):
-          status = self._RunOilProc(val.obj, argv[1:])
-          return status
+      if mylib.PYTHON:  # Not reusing CPython objects
+        if UP_val.tag == value_e.Obj:
+          val = cast(value__Obj, UP_val)
+          if isinstance(val.obj, objects.Proc):
+            status = self._RunOilProc(val.obj, argv[1:])
+            return status
 
     builtin_id = builtin.Resolve(arg0)
 
@@ -857,14 +883,13 @@ class Executor(object):
       self.errfmt.Print('%r not found', arg0, span_id=span_id)
       return 127
 
-    arg_vec = arg_vector(cmd_val.argv, cmd_val.arg_spids)
     if fork_external:
-      thunk = process.ExternalThunk(self.ext_prog, argv0_path, arg_vec, environ)
+      thunk = process.ExternalThunk(self.ext_prog, argv0_path, cmd_val, environ)
       p = process.Process(thunk, self.job_state)
       status = p.Run(self.waiter)
       return status
 
-    self.ext_prog.Exec(argv0_path, arg_vec, environ)  # NEVER RETURNS
+    self.ext_prog.Exec(argv0_path, cmd_val, environ)  # NEVER RETURNS
     assert False, "This line should never be reached" # makes mypy happy
 
   def _RunPipeline(self, node):
@@ -962,7 +987,7 @@ class Executor(object):
       # PS4='+$SOURCE_NAME:$LINENO:'
       # Note that for '> $LINENO' the span_id is set in _EvalRedirect.
       # TODO: Can we avoid setting this so many times?  See issue #567.
-      if node.words:
+      if len(node.words):
         span_id = word_.LeftMostSpanForWord(node.words[0])
         self.mem.SetCurrentSpanId(span_id)
 
@@ -980,9 +1005,8 @@ class Executor(object):
 
       words = braces.BraceExpandWords(node.words)
       cmd_val = self.word_ev.EvalWordSequence2(words, allow_assign=True)
-      UP_cmd_val = cmd_val
 
-      # STUB for compatibility.
+      UP_cmd_val = cmd_val
       if UP_cmd_val.tag == cmd_value_e.Argv:
         cmd_val = cast(cmd_value__Argv, UP_cmd_val)
         argv = cmd_val.argv
@@ -990,11 +1014,10 @@ class Executor(object):
       else:
         argv = ['TODO: trace string for assignment']
         if node.block:
-          # TODO: what's the best way to handle this?
-          node_block = cast(Any, node.block)
-
+          assert node.block.tag_() == command_e.BraceGroup, node
+          block = cast(command__BraceGroup, node.block)
           e_die("ShAssignment builtins don't accept blocks",
-                span_id=node_block.spids[0])
+                span_id=block.spids[0])
 
       # This comes before evaluating env, in case there are problems evaluating
       # it.  We could trace the env separately?  Also trace unevaluated code
@@ -1002,7 +1025,7 @@ class Executor(object):
       self.tracer.OnSimpleCommand(argv)
 
       # NOTE: RunSimpleCommand never returns when fork_external=False!
-      if node.more_env:  # I think this guard is necessary?
+      if len(node.more_env):  # I think this guard is necessary?
         is_other_special = False  # TODO: There are other special builtins too!
         if cmd_val.tag == cmd_value_e.Assign or is_other_special:
           # Special builtins have their temp env persisted.
@@ -1026,7 +1049,7 @@ class Executor(object):
       # TODO: SetCurrentSpanId to OUTSIDE?  Don't bother with stuff inside
       # expansion, since aliases are discouarged.
 
-      if node.more_env:
+      if len(node.more_env):
         self.mem.PushTemp()
         try:
           self._EvalTempEnv(node.more_env, (var_flags_e.Exported,))
@@ -1047,7 +1070,7 @@ class Executor(object):
     elif UP_node.tag == command_e.Pipeline:
       node = cast(command__Pipeline, UP_node)
       check_errexit = True
-      if node.stderr_indices:
+      if len(node.stderr_indices):
         e_die("|& isn't supported", span_id=node.spids[0])
 
       if node.negated:
@@ -1085,8 +1108,8 @@ class Executor(object):
       self.mem.SetCurrentSpanId(span_id)
 
       check_errexit = True
-      i = self.arith_ev.Eval(node.child)
-      status = 0 if i != 0 else 1
+      i = self.arith_ev.EvalToInt(node.child)
+      status = 1 if i == 0 else 0
 
     elif UP_node.tag == command_e.OilCondition:
       node = cast(command__OilCondition, UP_node)
@@ -1100,8 +1123,10 @@ class Executor(object):
 
     # TODO: Change x = 1 + 2*3 into its own Decl node.
     elif UP_node.tag == command_e.VarDecl:
+      # TODO: This should be constant, equivalent to const x = 'foo'
+
       node = cast(command__VarDecl, UP_node)
-      if node.keyword is None:
+      if node.keyword is None or node.keyword.id == Id.KW_Const:
         self.mem.SetCurrentSpanId(node.lhs[0].name.span_id)  # point to var name
 
         # Note: there's only one LHS
@@ -1109,7 +1134,8 @@ class Executor(object):
         py_val = self.expr_ev.EvalExpr(node.rhs)
         val = _PyObjectToVal(py_val)
 
-        self.mem.SetVar(vd_lval, val, (), scope_e.LocalOnly, keyword_id=None)
+        self.mem.SetVar(vd_lval, val, (var_flags_e.ReadOnly,),
+                        scope_e.LocalOnly, keyword_id=None)
         status = 0
 
       else:
@@ -1140,68 +1166,82 @@ class Executor(object):
         status = 0
 
     elif UP_node.tag == command_e.PlaceMutation:
-      node = cast(command__PlaceMutation, UP_node)
-      self.mem.SetCurrentSpanId(node.keyword.span_id)  # point to setvar/set
 
-      if node.op.id == Id.Arith_Equal:
-        py_val = self.expr_ev.EvalExpr(node.rhs)
+      if mylib.PYTHON:  # DISABLED because it relies on CPytho now
+        node = cast(command__PlaceMutation, UP_node)
+        self.mem.SetCurrentSpanId(node.keyword.span_id)  # point to setvar/set
 
-        lvals_ = []  # type: List[lvalue_t]
-        py_vals = []
-        if len(node.lhs) == 1:  # TODO: Optimize this common case (but measure)
-          # See ShAssignment
-          # EvalLhs
-          # EvalLhsAndLookup for +=
-          lval_ = self.expr_ev.EvalPlaceExpr(node.lhs[0]) # type: lvalue_t
+        with switch(node.keyword.id) as case:
+          if case(Id.KW_SetVar):
+            lookup_mode = scope_e.LocalOrGlobal
+          elif case(Id.KW_Set):
+            lookup_mode = scope_e.LocalOnly
+          elif case(Id.KW_SetGlobal):
+            lookup_mode = scope_e.GlobalOnly
+          elif case(Id.KW_SetRef):
+            # So this can modify two levels up?
+            lookup_mode = scope_e.Dynamic
 
-          lvals_.append(lval_)
-          py_vals.append(py_val)
-        else:
-          it = py_val.__iter__()
-          for pm_lhs in node.lhs:
-            lval_ = self.expr_ev.EvalPlaceExpr(pm_lhs)
-            py_val = it.next()
+            # TODO: setref upvalue = 'returned'
+            e_die("setref isn't implemented")
+          else:
+            raise AssertionError(node.keyword.id)
+
+        if node.op.id == Id.Arith_Equal:
+          py_val = self.expr_ev.EvalExpr(node.rhs)
+
+          lvals_ = []  # type: List[lvalue_t]
+          py_vals = []
+          if len(node.lhs) == 1:  # TODO: Optimize this common case (but measure)
+            # See ShAssignment
+            # EvalLhs
+            # EvalLhsAndLookup for +=
+            lval_ = self.expr_ev.EvalPlaceExpr(node.lhs[0]) # type: lvalue_t
 
             lvals_.append(lval_)
             py_vals.append(py_val)
-
-        # TODO: Change this to LocalOrGlobal
-        lookup_mode = scope_e.Dynamic
-
-        # TODO: Resolve the asymmetry betwen Named vs ObjIndex,ObjAttr.
-        for UP_lval_, py_val in zip(lvals_, py_vals):
-          tag = UP_lval_.tag_()
-          if tag == lvalue_e.ObjIndex:
-            lval_ = cast(lvalue__ObjIndex, UP_lval_)
-            lval_.obj[lval_.index] = py_val
-          elif tag == lvalue_e.ObjAttr:
-            lval_ = cast(lvalue__ObjAttr, UP_lval_)
-            setattr(lval_.obj, lval_.attr, py_val)
           else:
-            val = _PyObjectToVal(py_val)
-            # top level variable
-            self.mem.SetVar(UP_lval_, val, (), lookup_mode,
-                            keyword_id=node.keyword.id)
+            it = py_val.__iter__()
+            for pm_lhs in node.lhs:
+              lval_ = self.expr_ev.EvalPlaceExpr(pm_lhs)
+              py_val = it.next()
 
-      # TODO: Other augmented assignments
-      elif node.op.id == Id.Arith_PlusEqual:
-        # NOTE: x, y += 1 in Python is a SYNTAX error, but it's checked in the
-        # transformer and not the grammar.  We should do that too.
+              lvals_.append(lval_)
+              py_vals.append(py_val)
 
-        place_expr = cast(place_expr__Var, node.lhs[0])
-        pe_lval = lvalue.Named(place_expr.name.val)
-        py_val = self.expr_ev.EvalExpr(node.rhs)
+          # TODO: Resolve the asymmetry betwen Named vs ObjIndex,ObjAttr.
+          for UP_lval_, py_val in zip(lvals_, py_vals):
+            tag = UP_lval_.tag_()
+            if tag == lvalue_e.ObjIndex:
+              lval_ = cast(lvalue__ObjIndex, UP_lval_)
+              lval_.obj[lval_.index] = py_val
+            elif tag == lvalue_e.ObjAttr:
+              lval_ = cast(lvalue__ObjAttr, UP_lval_)
+              setattr(lval_.obj, lval_.attr, py_val)
+            else:
+              val = _PyObjectToVal(py_val)
+              # top level variable
+              self.mem.SetVar(UP_lval_, val, (), lookup_mode,
+                              keyword_id=node.keyword.id)
 
-        new_py_val = self.expr_ev.EvalPlusEquals(pe_lval, py_val)
-        # This should only be an int or float, so we don't need the logic above
-        val = value.Obj(new_py_val)
+        # TODO: Other augmented assignments
+        elif node.op.id == Id.Arith_PlusEqual:
+          # NOTE: x, y += 1 in Python is a SYNTAX error, but it's checked in the
+          # transformer and not the grammar.  We should do that too.
 
-        # TODO: This should be LocalOrGlobal too
-        self.mem.SetVar(pe_lval, val, (), scope_e.LocalOnly,
-                        keyword_id=node.keyword.id)
+          place_expr = cast(place_expr__Var, node.lhs[0])
+          pe_lval = lvalue.Named(place_expr.name.val)
+          py_val = self.expr_ev.EvalExpr(node.rhs)
 
-      else:
-        raise NotImplementedError(node.op)
+          new_py_val = self.expr_ev.EvalPlusEquals(pe_lval, py_val)
+          # This should only be an int or float, so we don't need the logic above
+          val = value.Obj(new_py_val)
+
+          self.mem.SetVar(pe_lval, val, (), lookup_mode,
+                          keyword_id=node.keyword.id)
+
+        else:
+          raise NotImplementedError(node.op)
 
       status = 0  # TODO: what should status be?
 
@@ -1468,7 +1508,12 @@ class Executor(object):
     elif UP_node.tag == command_e.ForExpr:
       node = cast(command__ForExpr, UP_node)
       status = 0
-      init, cond, body, update = node.init, node.cond, node.body, node.update
+
+      init = node.init
+      cond = node.cond
+      body = node.body
+      update = node.update
+
       if init:
         self.arith_ev.Eval(init)
 
@@ -1476,8 +1521,9 @@ class Executor(object):
       try:
         while True:
           if cond:
-            b = self.arith_ev.Eval(cond)
-            if not b:
+            # We only accept integers as conditions
+            cond_int = self.arith_ev.EvalToInt(cond)
+            if cond_int == 0:  # false
               break
 
           try:
@@ -1672,7 +1718,7 @@ class Executor(object):
     # See core/builtin.py for the Python signal handler that appends to this
     # list.
 
-    if self.trap_nodes:
+    if len(self.trap_nodes):
       # Make a copy and clear it so we don't cause an infinite loop.
       to_run = list(self.trap_nodes)
       del self.trap_nodes[:]
@@ -1690,21 +1736,17 @@ class Executor(object):
         e_die("errexit is disabled here, but strict_errexit disallows it "
               "with a compound command (%s)", node_str, span_id=span_id)
 
-    UP_node = node
-    # These nodes have no redirects.  NOTE: Function definitions have
-    # redirects, but we do NOT want to evaluate them yet!  They're evaluated
-    # on every invocation.
+    # These nodes have no redirects.
     # TODO: Speed this up with some kind of bit mask?
-    if UP_node.tag in (
+    if node.tag in (
         command_e.NoOp, command_e.ControlFlow, command_e.Pipeline,
         command_e.AndOr, command_e.CommandList, command_e.Sentence,
         command_e.TimeBlock, command_e.ShFunction, command_e.VarDecl,
         command_e.PlaceMutation, command_e.OilCondition, command_e.OilForIn,
         command_e.Proc, command_e.Func, command_e.Return, command_e.Expr,
         command_e.BareDecl):
-      redirects = [] # type: List[redirect_t]
+      redirects = []  # type: List[redirect_t]
     else:
-      node = cast(RedirectableCommand, UP_node)
       try:
         redirects = self._EvalRedirects(node)
       except error.RedirectEval as e:
@@ -1716,7 +1758,7 @@ class Executor(object):
     if redirects is None:  # evaluation error
       status = 1
 
-    elif redirects:
+    elif len(redirects):
       if self.fd_state.Push(redirects, self.waiter):
         try:
           status, check_errexit = self._Dispatch(node, fork_external)
@@ -1845,7 +1887,7 @@ class Executor(object):
     posix.close(w)  # not going to write
     while True:
       byte_str = posix.read(r, 4096)
-      if not byte_str:
+      if len(byte_str) == 0:
         break
       chunks.append(byte_str)
     posix.close(r)
@@ -2027,111 +2069,112 @@ class Executor(object):
 
     return status
 
-  def RunOilFunc(self, func, args, kwargs):
-    # type: (objects.Func, Tuple[Any, ...], Dict[str, Any]) -> Any
-    """Run an Oil function.
+  if mylib.PYTHON:
+    def RunOilFunc(self, func, args, kwargs):
+      # type: (objects.Func, Tuple[Any, ...], Dict[str, Any]) -> Any
+      """Run an Oil function.
 
-    var x = abs(y)   do f(x)   @split(mystr)   @join(myarray)
-    """
-    # TODO:
-    # - Return value register should be separate?
-    #   - But how does 'return 345' work?  Is that the return builtin
-    #     raising an exception?
-    #     Or is it setting the register?
-    #   - I think the exception can have any type, but when you catch it
-    #     you determine whether it's LastStatus() or it's something else.
-    #   - Something declared with 'func' CANNOT have both?
-    #
-    # - Type checking
-    #   - If the arguments are all strings, make them @ARGV?
-    #     That isn't happening right now.
+      var x = abs(y)   do f(x)   @split(mystr)   @join(myarray)
+      """
+      # TODO:
+      # - Return value register should be separate?
+      #   - But how does 'return 345' work?  Is that the return builtin
+      #     raising an exception?
+      #     Or is it setting the register?
+      #   - I think the exception can have any type, but when you catch it
+      #     you determine whether it's LastStatus() or it's something else.
+      #   - Something declared with 'func' CANNOT have both?
+      #
+      # - Type checking
+      #   - If the arguments are all strings, make them @ARGV?
+      #     That isn't happening right now.
 
-    #log('RunOilFunc kwargs %s', kwargs)
-    #log('RunOilFunc named_defaults %s', func.named_defaults)
+      #log('RunOilFunc kwargs %s', kwargs)
+      #log('RunOilFunc named_defaults %s', func.named_defaults)
 
-    node = func.node
-    self.mem.PushTemp()
+      node = func.node
+      self.mem.PushTemp()
 
-    # Bind positional arguments
-    n_args = len(args)
-    n_params = len(node.pos_params)
-    for i, param in enumerate(node.pos_params):
-      if i < n_args:
-        py_val = args[i]
-        val = _PyObjectToVal(py_val)
-      else:
-        val = func.pos_defaults[i]
-        if val is None:
-          # Python raises TypeError.  Should we do something else?
-          raise TypeError('No value provided for param %r', param.name)
-      self.mem.SetVar(lvalue.Named(param.name.val), val, (), scope_e.LocalOnly)
-
-    if node.pos_splat:
-      splat_name = node.pos_splat.val
-
-      # NOTE: This is a heterogeneous TUPLE, not list.
-      leftover = value.Obj(args[n_params:])
-      self.mem.SetVar(lvalue.Named(splat_name), leftover, (), scope_e.LocalOnly)
-    else:
-      if n_args > n_params:
-        raise TypeError(
-            "func %r expected %d arguments, but got %d" %
-            (node.name.val, n_params, n_args))
-
-    # Bind named arguments
-    for i, param in enumerate(node.named_params):
-      name = param.name
-      if name.val in kwargs:
-        py_val = kwargs.pop(name.val)  # REMOVE it
-        val = _PyObjectToVal(py_val)
-      else:
-        if name.val in func.named_defaults:
-          val = func.named_defaults[name.val]
+      # Bind positional arguments
+      n_args = len(args)
+      n_params = len(node.pos_params)
+      for i, param in enumerate(node.pos_params):
+        if i < n_args:
+          py_val = args[i]
+          val = _PyObjectToVal(py_val)
         else:
+          val = func.pos_defaults[i]
+          if val is None:
+            # Python raises TypeError.  Should we do something else?
+            raise TypeError('No value provided for param %r', param.name)
+        self.mem.SetVar(lvalue.Named(param.name.val), val, (), scope_e.LocalOnly)
+
+      if node.pos_splat:
+        splat_name = node.pos_splat.val
+
+        # NOTE: This is a heterogeneous TUPLE, not list.
+        leftover = value.Obj(args[n_params:])
+        self.mem.SetVar(lvalue.Named(splat_name), leftover, (), scope_e.LocalOnly)
+      else:
+        if n_args > n_params:
           raise TypeError(
-              "Named argument %r wasn't passed, and it doesn't have a default "
-              "value" % name.val)
+              "func %r expected %d arguments, but got %d" %
+              (node.name.val, n_params, n_args))
 
-      self.mem.SetVar(lvalue.Named(name.val), val, (), scope_e.LocalOnly)
+      # Bind named arguments
+      for i, param in enumerate(node.named_params):
+        name = param.name
+        if name.val in kwargs:
+          py_val = kwargs.pop(name.val)  # REMOVE it
+          val = _PyObjectToVal(py_val)
+        else:
+          if name.val in func.named_defaults:
+            val = func.named_defaults[name.val]
+          else:
+            raise TypeError(
+                "Named argument %r wasn't passed, and it doesn't have a default "
+                "value" % name.val)
 
-    if node.named_splat:
-      splat_name = node.named_splat.val
-      # Note: this dict is not an AssocArray
-      leftover = value.Obj(kwargs)
-      self.mem.SetVar(lvalue.Named(splat_name), leftover, (), scope_e.LocalOnly)
-    else:
-      if kwargs:
-        raise TypeError(
-            'func %r got unexpected named arguments: %s' %
-            (node.name.val, ', '.join(kwargs.keys())))
+        self.mem.SetVar(lvalue.Named(name.val), val, (), scope_e.LocalOnly)
 
-    return_val = None
-    try:
-      self._Execute(node.body)
-    except _ControlFlow as e:
-      if e.IsReturn():
-        # TODO: Rename this
-        return_val = e.StatusCode()
-    finally:
-      self.mem.PopTemp()
-    return return_val
+      if node.named_splat:
+        splat_name = node.named_splat.val
+        # Note: this dict is not an AssocArray
+        leftover = value.Obj(kwargs)
+        self.mem.SetVar(lvalue.Named(splat_name), leftover, (), scope_e.LocalOnly)
+      else:
+        if kwargs:
+          raise TypeError(
+              'func %r got unexpected named arguments: %s' %
+              (node.name.val, ', '.join(kwargs.keys())))
 
-  def RunLambda(self, lambda_node, args, kwargs):
-    # type: (expr__Lambda, Tuple[Any, ...], Dict[str, Any]) -> Any
-    """ Run a lambda like |x| x+1 """
+      return_val = None
+      try:
+        self._Execute(node.body)
+      except _ControlFlow as e:
+        if e.IsReturn():
+          # TODO: Rename this
+          return_val = e.StatusCode()
+      finally:
+        self.mem.PopTemp()
+      return return_val
 
-    self.mem.PushTemp()
-    # Bind params.  TODO: Reject kwargs, etc.
-    for i, param in enumerate(lambda_node.params):
-      val = value.Obj(args[i])
-      self.mem.SetVar(lvalue.Named(param.name.val), val, (), scope_e.LocalOnly)
+    def RunLambda(self, lambda_node, args, kwargs):
+      # type: (expr__Lambda, Tuple[Any, ...], Dict[str, Any]) -> Any
+      """ Run a lambda like |x| x+1 """
 
-    return_val = None
-    try:
-      return_val = self.expr_ev.EvalExpr(lambda_node.body)
-    finally:
-      self.mem.PopTemp()
-    return return_val
+      self.mem.PushTemp()
+      # Bind params.  TODO: Reject kwargs, etc.
+      for i, param in enumerate(lambda_node.params):
+        val = value.Obj(args[i])
+        self.mem.SetVar(lvalue.Named(param.name.val), val, (), scope_e.LocalOnly)
+
+      return_val = None
+      try:
+        return_val = self.expr_ev.EvalExpr(lambda_node.body)
+      finally:
+        self.mem.PopTemp()
+      return return_val
 
   def EvalBlock(self, block):
     # type: (command_t) -> Dict[str, cell]

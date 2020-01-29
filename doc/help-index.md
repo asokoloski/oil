@@ -89,7 +89,7 @@ an **unimplemented** feature.
                   assoc         assoc=(['a']=1 ['b']=2)   assoc['x']=b
   [Builtins]      local   readonly   export   unset   shift
                   declare   typeset   X let
-  [Oil Keywords]  var   set   setvar   setref   const
+  [Oil Keywords]  const   var   setvar   set   setglobal   setref
 ```
 
 <h2 id="expr">
@@ -182,14 +182,14 @@ X [Unsupported]   enable
                   X use                  source with namespace, file-relative 
                   X opts                 getopts replacement
                   push                   add elements to end of array
-                  append                 add bytes to end of string
                   repr                   Show debug representation of vars
-                  X log   X die          common functions (polyfill)
-                  X getline              Instead of read -raw :name
+                  getline                Instead of read -raw :name
                   write                  like echo, but with --, -sep, -end
+                  X log   X die          common functions (polyfill)
   [Data Formats]  json   X tsv2   X html   X struct/binary
 X [External Lang] BEGIN   END   when (awk)
                   rule (make)   each (xargs)   fs (find)
+X [Testing]       check
 ```
 
 <h2 id="option">
@@ -291,13 +291,17 @@ X [Shell State]   BASH_CMDS   @DIRSTACK
 </h2>
 
 ```oil-help-index
-  [Collections]   len()
+  [Collections]   len()   copy()
   [Pattern]       regmatch()   fnmatch()
   [String]        find()   sub()   join() 
                   split()             $IFS, awk algorithm, regex
+  [Better Syntax] shquote()
+                  lstrip()   rstrip()   lstripglob()   rstripglob()
+                  upper()   lower()
+                  strftime()
+  [Arrays]        index()
+  [Assoc Arrays]  @names()   @values()
   [Block]         setvar()            for procs to set in outer scope
                   evalblock()         procs evaluate block to namespace
-  [libc]          strftime()
-X [Testing]       check
 X [Hashing]       sha1   sha256 (etc.)
 ```

@@ -304,8 +304,23 @@ readonly OSH_PARSE_FILES=(
   $REPO_ROOT/frontend/parse_lib.py
 )
 
-readonly TRANSLATE=(
+readonly CAN_TRANSLATE=(
+  # These translate but don't compile
   $REPO_ROOT/osh/glob_.py
+  $REPO_ROOT/osh/string_ops.py
+  $REPO_ROOT/osh/word_compile.py
+  $REPO_ROOT/osh/builtin_bracket.py
+  $REPO_ROOT/osh/split.py
+  $REPO_ROOT/oil_lang/regex_translate.py
+)
+
+
+readonly TRANSLATE=(
+  # except (e1, e2) isn't supported for InvalidSlice, utf-8
+  $REPO_ROOT/osh/word_eval.py
+
+  # except (e1, e2) isn't supported
+  #$REPO_ROOT/osh/cmd_exec.py
 )
 
 # From types/more-oil-manifest.txt
@@ -330,7 +345,7 @@ readonly MORE_OIL=(
   $REPO_ROOT/osh/split.py
   $REPO_ROOT/oil_lang/regex_translate.py
 
-  # Fails because of isinstance(objects.StrArray) and Union
+  # has Union because of cmd_val
   #$REPO_ROOT/osh/cmd_exec.py
 
   # Fails because of Union[None, bool, str] -- dynamic typing
@@ -347,8 +362,7 @@ osh-parse() {
 
   #if false; then
   if true; then
-    mycpp $raw bin/$name.py "${OSH_PARSE_FILES[@]}"
-      #"${TRANSLATE[@]}"
+    mycpp $raw bin/$name.py "${OSH_PARSE_FILES[@]}" "${TRANSLATE[@]}"
       #"${MORE_OIL[@]}"
   fi
 

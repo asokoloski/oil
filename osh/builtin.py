@@ -282,7 +282,7 @@ def _AppendParts(s, spans, max_results, join_next, parts):
 TIMES_SPEC = _Register('times')
 
 class Times(object):
-  def __call__(self, arg_vec):
+  def __call__(self, cmd_val):
     utime, stime, cutime, cstime, elapsed = os.times()
     print("%dm%1.3fs %dm%1.3fs" % (utime / 60, utime % 60, stime / 60, stime % 60))
     print("%dm%1.3fs %dm%1.3fs" % (cutime / 60, cutime % 60, cstime / 60, cstime % 60))
@@ -318,10 +318,10 @@ class Read(object):
     self.splitter = splitter
     self.mem = mem
 
-  def __call__(self, arg_vec):
-    arg, i = READ_SPEC.ParseVec(arg_vec)
+  def __call__(self, cmd_val):
+    arg, i = READ_SPEC.ParseVec(cmd_val)
 
-    names = arg_vec.strs[i:]
+    names = cmd_val.argv[i:]
     if arg.n is not None:  # read a certain number of bytes
       stdin = sys.stdin.fileno()
       try:
@@ -514,8 +514,8 @@ class Pushd(object):
     self.dir_stack = dir_stack
     self.errfmt = errfmt
 
-  def __call__(self, arg_vec):
-    num_args = len(arg_vec.strs) - 1
+  def __call__(self, cmd_val):
+    num_args = len(cmd_val.argv) - 1
     if num_args == 0:
       # TODO: It's suppose to try another dir before doing this?
       self.errfmt.Print('pushd: no other directory')
@@ -524,12 +524,12 @@ class Pushd(object):
       raise args.UsageError('got too many arguments')
 
     # TODO: 'cd' uses normpath?  Is that inconsistent?
-    dest_dir = os_path.abspath(arg_vec.strs[1])
+    dest_dir = os_path.abspath(cmd_val.argv[1])
     try:
       posix.chdir(dest_dir)
     except OSError as e:
       self.errfmt.Print("pushd: %r: %s", dest_dir, posix.strerror(e.errno),
-                        span_id=arg_vec.spids[1])
+                        span_id=cmd_val.arg_spids[1])
       return 1
 
     self.dir_stack.Push(dest_dir)
@@ -563,9 +563,9 @@ class Popd(object):
     self.dir_stack = dir_stack
     self.errfmt = errfmt
 
-  def __call__(self, arg_vec):
-    if len(arg_vec.spids) > 1:
-      raise args.UsageError('got extra argument', span_id=arg_vec.spids[1])
+  def __call__(self, cmd_val):
+    if len(cmd_val.arg_spids) > 1:
+      raise args.UsageError('got extra argument', span_id=cmd_val.arg_spids[1])
 
     _PopDirStack(self.mem, self.dir_stack, self.errfmt)
 
@@ -586,15 +586,15 @@ class Dirs(object):
     self.dir_stack = dir_stack
     self.errfmt = errfmt
 
-  def __call__(self, arg_vec):
+  def __call__(self, cmd_val):
     home_dir = self.mem.GetVar('HOME')
 
-    arg, i = DIRS_SPEC.ParseVec(arg_vec)
+    arg, i = DIRS_SPEC.ParseVec(cmd_val)
     style = SINGLE_LINE
 
     # Following bash order of flag priority
     if arg.l:
-      home_dir = None  # disable pretty ~ 
+      home_dir = None  # disable pretty ~
     if arg.c:
       self.dir_stack.Reset()
       return 0
@@ -621,8 +621,8 @@ class Pwd(object):
     self.mem = mem
     self.errfmt = errfmt
 
-  def __call__(self, arg_vec):
-    arg, _ = PWD_SPEC.ParseVec(arg_vec)
+  def __call__(self, cmd_val):
+    arg, _ = PWD_SPEC.ParseVec(cmd_val)
 
     # NOTE: 'pwd' will succeed even if the directory has disappeared.  Other
     # shells behave that way too.
@@ -651,15 +651,15 @@ class Help(object):
     self.loader = loader
     self.errfmt = errfmt
 
-  def __call__(self, arg_vec):
+  def __call__(self, cmd_val):
     try:
-      topic = arg_vec.strs[1]
+      topic = cmd_val.argv[1]
     except IndexError:
       topic = 'help'
 
     # TODO: Should be -i for index?  Or -l?
     if topic == 'index':
-      groups = arg_vec.strs[2:]
+      groups = cmd_val.argv[2:]
       if len(groups) == 0:
         # Print the whole index
         groups = help_index.GROUPS
@@ -682,11 +682,11 @@ class Help(object):
       # info zzz
       # help help
       # We should do something smarter.
-      
+
       # NOTE: This is mostly an interactive command.  Is it obnoxious to
       # quote the line of code?
       self.errfmt.Print('no help topics match %r', topic,
-                        span_id=arg_vec.spids[1])
+                        span_id=cmd_val.arg_spids[1])
       return 1
 
     print(f.read())
@@ -695,15 +695,17 @@ class Help(object):
 
 
 HISTORY_SPEC = _Register('history')
-
+HISTORY_SPEC.ShortFlag('-c')
+HISTORY_SPEC.ShortFlag('-d', args.Int)
 
 class History(object):
   """Show interactive command history."""
 
-  def __init__(self, readline_mod):
+  def __init__(self, readline_mod, f=sys.stdout):
     self.readline_mod = readline_mod
+    self.f = f
 
-  def __call__(self, arg_vec):
+  def __call__(self, cmd_val):
     # NOTE: This builtin doesn't do anything in non-interactive mode in bash?
     # It silently exits zero.
     # zsh -c 'history' produces an error.
@@ -711,13 +713,29 @@ class History(object):
     if not readline_mod:
       raise args.UsageError("OSH wasn't compiled with the readline module.")
 
-    arg, arg_index = HISTORY_SPEC.ParseVec(arg_vec)
+    arg, arg_index = HISTORY_SPEC.ParseVec(cmd_val)
+
+    # Clear all history
+    if arg.c:
+      readline_mod.clear_history()
+      return 0
+
+    # Delete history entry by id number
+    if arg.d:
+      cmd_index = arg.d - 1
+
+      try:
+        readline_mod.remove_history_item(cmd_index)
+      except ValueError:
+        raise args.UsageError("couldn't find item %d" % arg.d)
+
+      return 0
 
     # Returns 0 items in non-interactive mode?
     num_items = readline_mod.get_current_history_length()
     #log('len = %d', num_items)
 
-    rest = arg_vec.strs[arg_index:]
+    rest = cmd_val.argv[arg_index:]
     if len(rest) == 0:
       start_index = 1
     elif len(rest) == 1:
@@ -737,5 +755,5 @@ class History(object):
 
     for i in xrange(start_index, num_items+1):  # 1-based index
       item = readline_mod.get_history_item(i)
-      print('%5d  %s' % (i, item))
+      self.f.write('%5d  %s\n' % (i, item))
     return 0

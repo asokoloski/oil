@@ -388,7 +388,8 @@ builtins2() {
 
 # dash and mksh don't implement 'dirs'
 builtin-dirs() {
-  sh-spec spec/builtin-dirs.test.sh $BASH $ZSH $OSH_LIST "$@"
+  sh-spec spec/builtin-dirs.test.sh --osh-failures-allowed 1 \
+    $BASH $ZSH $OSH_LIST "$@"
 }
 
 builtin-vars() {
@@ -451,7 +452,7 @@ glob() {
 }
 
 arith() {
-  sh-spec spec/arith.test.sh \
+  sh-spec spec/arith.test.sh --osh-failures-allowed 2 \
     ${REF_SHELLS[@]} $ZSH $OSH_LIST "$@"
 }
 
@@ -821,7 +822,7 @@ oil-array() {
 }
 
 oil-assign() {
-  sh-spec spec/oil-assign.test.sh --cd-tmp --osh-failures-allowed 0 \
+  sh-spec spec/oil-assign.test.sh --cd-tmp --osh-failures-allowed 1 \
     $OSH_LIST "$@"
 }
 

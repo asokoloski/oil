@@ -12,7 +12,7 @@ test_lib.py - Functions for testing.
 import string
 import sys
 
-from _devbuild.gen.runtime_asdl import builtin_e
+from _devbuild.gen.runtime_asdl import builtin_e, cmd_value
 from _devbuild.gen.syntax_asdl import source, Token
 from asdl import pybase
 from asdl import runtime
@@ -37,6 +37,10 @@ from osh import expr_eval
 from osh import split
 from osh import state
 from osh import word_eval
+
+
+def MakeBuiltinArgv(argv):
+  return cmd_value.Argv(argv, [0] * len(argv))
 
 
 def Tok(id_, val):
@@ -126,6 +130,7 @@ def MakeTestEvaluator():
 
   exec_deps = cmd_exec.Deps()
   exec_deps.splitter = split.SplitContext(mem)
+  exec_deps.trap_nodes = []
 
   ev = word_eval.CompletionWordEvaluator(mem, exec_opts, exec_deps, arena)
   return ev
@@ -181,6 +186,7 @@ def InitExecutor(parse_ctx=None, comp_lookup=None, arena=None, mem=None,
   exec_deps = cmd_exec.Deps()
   exec_deps.search_path = state.SearchPath(mem)
   exec_deps.errfmt = errfmt
+  exec_deps.trap_nodes = []
   exec_deps.job_state = job_state
   exec_deps.waiter = process.Waiter(exec_deps.job_state, exec_opts)
 

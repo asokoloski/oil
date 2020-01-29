@@ -33,13 +33,6 @@ module runtime
            string* argv, int* arg_spids,
            assign_arg* pairs)
 
-  -- TODO: Remove arg_vector in favor of cmd_value.Argv.
-  -- The spids array is parallel to strs, the argv values.  Note that each
-  -- entry in argv came from a single word, but a word can produce multiple
-  -- argv entries.
-  -- 'rhs' is for assignment builtins.
-  arg_vector = (string* strs, int* spids)
-
   -- A parse-time word_part from syntax.asdl is evaluated to a runtime
   -- part_value.
   part_value = 
@@ -59,10 +52,13 @@ module runtime
     -- An Undef value is different than "no binding" because of dynamic scope.
     Undef
   | Str(string s)
+    -- Important: This is NOT stored in state.Mem now.  It's used only by
+    -- the arithmetic evaluator.
+  | Int(int i)
     -- "holes" in the array are represented by None
   | MaybeStrArray(string* strs)
     -- d will be a dict
-  | AssocArray(any d)
+  | AssocArray(assoc d)
     -- A Python-style object.  'any' is not currently type checked.
     -- invariant for 'proc' stack:
     -- * s bool, int, float, (NOT str), or...
@@ -81,7 +77,9 @@ module runtime
   -- 'declare -A' it, it will be undefined and waiting to turn into an
   -- associative array.
   var_flags = Exported | ReadOnly
-  scope = LocalOnly | GlobalOnly | Dynamic
+
+  -- Dynamic is for shell; LocalOrGlobal is for Oil
+  scope = LocalOnly | GlobalOnly | Dynamic | LocalOrGlobal
 
   -- For OSH assignment, evaluated from osh_ast.lhs_expr
   -- TODO: Rename this to sh_place?
@@ -119,6 +117,7 @@ module runtime
 
   -- word_eval.py: SliceParts is for ${a-} and ${a+}, Error is for ${a?}, and
   -- SliceAndAssign is for ${a=}.
+  -- TODO: Could be cleaner if Error and SpliceAndAssign have part_vals
   effect = SpliceParts | Error | SpliceAndAssign | NoOp
 
   -- core/process.py
